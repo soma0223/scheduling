@@ -353,3 +353,64 @@ test('習慣(anytime): ToDo は習慣が残した大きな空きに入る', () =
   assert.deepEqual(r.upserts.filter((e) => e.ref === 't').map((e) => e.start), ['08:00']);
   assert.deepEqual(r.unplaced.todos, []);
 });
+
+// ---- 週◯回 / 何時以降・何時まで ----
+const WK = { ...S, dayStart: '08:00', dayEnd: '22:00', horizon: 7 };
+const MON6 = new Date(2026, 10, 2, 6, 0); // 月曜の朝
+const dates = (r, ref) => r.upserts.filter((e) => e.ref === ref).map((e) => e.date).sort();
+
+test('週N回: 曜日は自由で、間があくように選ぶ（週3回 → 月・水・金）', () => {
+  const habits = [{ id: 'h', title: '運動', days: [0, 1, 2, 3, 4, 5, 6], minutes: 30, anytime: true, perWeek: 3 }];
+  const r = plan({ events: [], todos: [], habits, settings: WK }, MON6);
+  assert.deepEqual(dates(r, 'h'), ['2026-11-02', '2026-11-04', '2026-11-06']);
+  // 冪等
+  assert.deepEqual(plan({ events: r.upserts, todos: [], habits, settings: WK }, MON6).upserts, []);
+});
+
+test('週N回: すでにこなした分を数える／使える曜日で絞る／予定で埋まった日は避ける', () => {
+  const now = new Date(2026, 10, 4, 6, 0); // 水曜
+  const habits = [{ id: 'h', title: '運動', days: [1, 3, 5, 6], minutes: 30, anytime: true, perWeek: 2 }];
+  // 月曜に1回こなし済み
+  const done = ev('old', '2026-11-02', '08:00', '08:30', { auto: true, kind: 'habit', ref: 'h' });
+  const r = plan({ events: [done], todos: [], habits, settings: { ...WK, horizon: 4 } }, now); // 水〜土
+  assert.deepEqual(dates(r, 'h'), ['2026-11-06']); // 月曜に1回こなし済み → 残り1回は、間があく金曜
+  // 金曜が終日埋まっていれば、次に間のあく土曜へ
+  const busy = [done, ev('b', '2026-11-06', '08:00', '22:00')];
+  const r2 = plan({ events: busy, todos: [], habits, settings: { ...WK, horizon: 4 } }, now);
+  assert.deepEqual(dates(r2, 'h'), ['2026-11-07']);
+});
+
+test('週N回: 回数を減らすと先の日の枠から外れる／回数が足りないと警告', () => {
+  const habits3 = [{ id: 'h', title: '運動', days: [0, 1, 2, 3, 4, 5, 6], minutes: 30, anytime: true, perWeek: 3 }];
+  const r = plan({ events: [], todos: [], habits: habits3, settings: WK }, MON6);
+  const r2 = plan({ events: r.upserts, todos: [], habits: [{ ...habits3[0], perWeek: 2 }], settings: WK }, MON6);
+  assert.deepEqual(r2.removes.length, 1);
+  assert.equal(r2.removes[0].includes('2026-11-06'), true);
+  // 使える日が1日しかないのに週3回 → 置けた分だけ置いて警告
+  const r3 = plan({ events: [], todos: [], habits: [{ ...habits3[0], days: [1] }], settings: { ...WK, horizon: 7 } }, MON6);
+  assert.deepEqual(dates(r3, 'h'), ['2026-11-02']);
+  assert.equal(r3.unplaced.habits.length, 2);
+});
+
+test('何時以降・何時まで: ToDo も習慣も、その範囲の空きにだけ入る', () => {
+  const s = { ...WK, horizon: 1 };
+  const todos = [{ id: 't', title: 'T', minutes: 60, notBefore: '19:00' }, { id: 'u', title: 'U', minutes: 60, notAfter: '10:00' }];
+  const r = plan({ events: [], todos, habits: [], settings: s }, MON6);
+  assert.deepEqual(slot(r, 't'), ['19:00-20:00']);
+  assert.deepEqual(slot(r, 'u'), ['08:00-09:00']);
+  // 範囲に収まらなければ置かない（○○時以降なのに夜は予定で埋まっている）
+  const busyNight = [ev('n', '2026-11-02', '19:00', '22:00')];
+  const r2 = plan({ events: busyNight, todos: [todos[0]], habits: [], settings: s }, MON6);
+  assert.deepEqual(r2.unplaced.todos, [{ id: 't', minutes: 60 }]);
+  const h = plan({ events: [], todos: [], habits: [{ id: 'h', title: 'H', days: [1], anytime: true, minutes: 30, notBefore: '21:00' }], settings: s }, MON6);
+  assert.deepEqual(h.upserts.map((e) => e.start), ['21:00']);
+});
+
+test('何時以降: 深夜まで続く活動時間では 0:30 以降が翌日側として扱われる。冪等', () => {
+  const s = { ...NIGHT, horizon: 1 };
+  const todos = [{ id: 't', title: 'T', minutes: 30, notBefore: '00:30' }];
+  const now = new Date(2026, 10, 2, 6, 0);
+  const r = plan({ events: [], todos, habits: [], settings: s }, now);
+  assert.deepEqual(r.upserts.map((e) => `${e.date} ${e.start}`), ['2026-11-03 00:30']);
+  assert.deepEqual(plan({ events: r.upserts, todos, habits: [], settings: s }, now).upserts, []);
+});

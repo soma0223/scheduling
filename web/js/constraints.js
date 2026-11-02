@@ -27,7 +27,7 @@ export const DEFAULT_MODES = [
 ];
 
 /** 場所または「あとから」の条件を持つか */
-export const hasConstraint = (x) => !!(x && ((x.places || []).length || (x.after && x.after.key)));
+export const hasConstraint = (x) => !!(x && ((x.places || []).length || (x.after && x.after.key) || x.notBefore || x.notAfter));
 
 /** 移動中の場所か（移動手段、または「移動中」にした場所） */
 export const isTransit = (name, s) =>
@@ -125,6 +125,8 @@ export function placeOfGap(placed, a, b, s) {
 export function describe(x) {
   const out = [];
   if ((x.places || []).length) out.push(x.places.join('・') + 'で');
+  if (x.notBefore) out.push(`${x.notBefore.replace(/^0/, '')}以降`);
+  if (x.notAfter) out.push(`${x.notAfter.replace(/^0/, '')}まで`);
   if (x.after && x.after.key) {
     const m = +x.after.min || 0;
     out.push(`「${x.after.key}」の${m ? (m % 60 ? m + '分' : m / 60 + '時間') + '後' : '後'}から`);

@@ -183,8 +183,24 @@ function candidatesFor(item, date, poolArr, lo, hi, s) {
       out = out.map(([a, b]) => [Math.max(a, lo2), b]).filter(([a, b]) => b > a);
     }
   }
+  // 「◯時以降に始める」「◯時までに終える」。深夜まで続く活動時間では、早い時刻（0〜2時など）は翌日側に寄せる
+  const { ds, de } = dayBounds(s);
+  if (item.notBefore) {
+    let nb = toM(item.notBefore);
+    if (de > 1440 && nb < ds && nb + 1440 < de) nb += 1440;
+    out = out.map(([a, b]) => [Math.max(a, nb), b]).filter(([a, b]) => b > a);
+  }
+  if (item.notAfter) {
+    let na = toM(item.notAfter);
+    if (na <= ds) na += 1440;
+    out = out.map(([a, b]) => [a, Math.min(b, na)]).filter(([a, b]) => b > a);
+  }
   return splitMidnight(out);
 }
+
+const weekStartOf = (date) => addDays(date, -((pd(date).getDay() + 6) % 7)); // 月曜はじまり
+const daysBetween = (a, b) => Math.round((pd(b) - pd(a)) / 864e5);
+const weeklyN = (h) => Math.max(0, Math.min(7, Math.round(+h.perWeek || 0)));
 
 const sameAuto = (a, b) =>
   a.title === b.title && a.date === b.date && a.start === b.start && a.end === b.end &&
@@ -281,6 +297,28 @@ export function plan({ events, todos, habits, settings }, now = new Date(), { fr
     else removes.push(...list.map((e) => e.id));
   }
 
+  // 週◯回の習慣：すでにある枠が回数を超えていたら（回数を減らしたとき）、先の日のものから外す
+  for (const h of habitMap.values()) {
+    const N = weeklyN(h);
+    if (!N) continue;
+    const byWeek = new Map();
+    for (const k of keep.filter((x) => x.kind === 'habit' && x.ref === h.id)) {
+      const w = weekStartOf(k.date);
+      byWeek.set(w, [...(byWeek.get(w) || []), k]);
+    }
+    for (const list of byWeek.values()) {
+      list.sort((a, b) => a.date.localeCompare(b.date));
+      let extra = list.length - N;
+      for (let i = list.length - 1; i >= 0 && extra > 0; i--) {
+        const k = list[i];
+        if (k.pinned || started(k)) continue;
+        removes.push(k.id);
+        keep.splice(keep.indexOf(k), 1);
+        extra--;
+      }
+    }
+  }
+
   const placed = [];
   const pool = () => [...fixed, ...keep, ...placed];
   const cand = (item, date, lo, hi) => candidatesFor(item, date, pool(), Math.max(lo, lowerBound(date, s, now)), hi, s);
@@ -290,22 +328,56 @@ export function plan({ events, todos, habits, settings }, now = new Date(), { fr
   const habitList = [...habitMap.values()].sort(
     (a, b) => toM(a.to) - toM(a.from) - (toM(b.to) - toM(b.from)) || a.id.localeCompare(b.id),
   );
+  // 1日に1つ置く（置けたら true）。今日のもう過ぎた時間帯は「未配置」扱いにしない
+  const placeHabit = (h, d, warn = true) => {
+    const m = +h.minutes || 30;
+    const [lo, hi] = habitWindow(h, s);
+    const fits = cand(h, d, lo, hi).filter(([a, b]) => b - a >= m);
+    // 時間帯を決めていない習慣は、ちょうど収まる隙間に入れる（大きな空きはほかの ToDo のために残す）
+    const g = h.anytime ? fits.sort((x, y) => (x[1] - x[0]) - (y[1] - y[0]) || x[0] - y[0])[0] : fits[0];
+    if (!g) {
+      if (warn && !(d === today && lowerBound(d, s, now) + m > hi)) unplaced.habits.push({ id: h.id, date: d });
+      return false;
+    }
+    placed.push(autoEvent('habit', h, d, g[0], g[0] + m, `auto-h-${h.id}-${d}`));
+    return true;
+  };
+  const dailyHabits = habitList.filter((h) => !weeklyN(h));
   for (const d of days) {
     const wd = pd(d).getDay();
-    for (const h of habitList) {
+    for (const h of dailyHabits) {
       if (!(h.days || []).includes(wd) || (h.skip || []).includes(d)) continue;
       if (keep.some((k) => k.kind === 'habit' && k.ref === h.id && k.date === d)) continue;
-      const m = +h.minutes || 30;
-      const [lo, hi] = habitWindow(h, s);
-      const fits = cand(h, d, lo, hi).filter(([a, b]) => b - a >= m);
-      // 時間帯を決めていない習慣は、ちょうど収まる隙間に入れる（大きな空きはほかの ToDo のために残す）
-      const g = h.anytime ? fits.sort((x, y) => (x[1] - x[0]) - (y[1] - y[0]) || x[0] - y[0])[0] : fits[0];
-      if (!g) {
-        // 今日のもう過ぎた時間帯は「未配置」扱いにしない
-        if (!(d === today && lowerBound(d, s, now) + m > hi)) unplaced.habits.push({ id: h.id, date: d });
-        continue;
+      placeHabit(h, d);
+    }
+  }
+  // 週◯回（曜日は自由）：その週の残りの回数を、間があくように選んだ日に入れる
+  for (const h of habitList.filter((x) => weeklyN(x))) {
+    const N = weeklyN(h), m = +h.minutes || 30;
+    const okDay = (d) => ((h.days && h.days.length ? h.days : [0, 1, 2, 3, 4, 5, 6]).includes(pd(d).getDay())) && !(h.skip || []).includes(d);
+    const weeks = new Map();
+    for (const d of days) weeks.set(weekStartOf(d), [...(weeks.get(weekStartOf(d)) || []), d]);
+    for (const [w, wdays] of weeks) {
+      const chosen = new Set(keep.filter((k) => k.kind === 'habit' && k.ref === h.id && weekStartOf(k.date) === w).map((k) => k.date));
+      // まだ見えていない先の日（配置期間の外）に回せる分は、今は置かない
+      let outside = 0;
+      for (let i = 0; i < 7; i++) { const d = addDays(w, i); if (d > lastDay && okDay(d)) outside++; }
+      let need2 = N - chosen.size - outside;
+      const cap = N <= 1 ? 7 : N === 2 ? 3 : 2; // 日があきすぎ/詰まりすぎないよう、目安の間隔
+      while (need2 > 0) {
+        let best = null;
+        for (const d of wdays) {
+          if (chosen.has(d) || !okDay(d)) continue;
+          const [lo, hi] = habitWindow(h, s);
+          if (!cand(h, d, lo, hi).some(([a, b]) => b - a >= m)) continue;
+          const dist = chosen.size ? Math.min(cap, ...[...chosen].map((c) => Math.abs(daysBetween(c, d)))) : cap;
+          if (!best || dist > best.dist) best = { d, dist }; // 同点なら早い日（wdays は日付順）
+        }
+        if (!best) { unplaced.habits.push({ id: h.id, date: wdays.find(okDay) || wdays[0], weekly: true }); need2--; continue; }
+        placeHabit(h, best.d, false);
+        chosen.add(best.d);
+        need2--;
       }
-      placed.push(autoEvent('habit', h, d, g[0], g[0] + m, `auto-h-${h.id}-${d}`));
     }
   }
 
