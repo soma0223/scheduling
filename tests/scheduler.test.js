@@ -278,3 +278,51 @@ test('活動時間: 保存されたフラグと食い違っても、終了が開
   const r = plan({ events: [], todos, habits: [], settings: { ...S, dayEnd: '02:59', dayEndNext: false, horizon: 1 } }, now);
   assert.deepEqual(r.upserts.map((e) => `${e.date} ${e.start}`), ['2026-11-02 20:55']);
 });
+
+// ---- 移動（ルート・手段）----
+import { travelSegments } from '../web/js/constraints.js';
+const TS = { ...DEFAULT_SETTINGS, home: '家', places: [{ name: '家' }, { name: '学校' }, { name: 'ジム' }],
+  modes: [{ name: '徒歩', work: false }, { name: '電車', work: true }],
+  routes: [{ from: '家', to: '学校', minutes: 40, mode: '電車' }, { from: '学校', to: 'ジム', minutes: 15, mode: '徒歩' }],
+  dayStart: '07:00', dayEnd: '23:00', horizon: 1 };
+const SCH = ev('s', '2026-11-02', '09:00', '15:00', { place: '学校', title: '授業' });
+const tmin = (x) => `${x.start}-${x.end}`;
+
+test('移動: 場所が変わる予定の前後に移動時間ができる（行き・帰り）', () => {
+  const t = travelSegments([SCH], TS);
+  assert.deepEqual(t.map((x) => [x.id, tmin(x), x.place]), [['travel-s', '08:20-09:00', '電車'], ['travel-home-s', '15:00-15:40', '電車']]);
+});
+
+test('移動: 学校→ジムのように場所が変わる予定のあいだにも入る。同じ場所なら入らない', () => {
+  const gym = ev('g', '2026-11-02', '16:00', '17:00', { place: 'ジム' });
+  const t = travelSegments([SCH, gym], TS);
+  assert.deepEqual(t.map((x) => `${x.id} ${tmin(x)}`), ['travel-s 08:20-09:00', 'travel-g 15:45-16:00']); // ジム→家のルートは未登録なので帰りは無し
+  // 同じ場所どうし（学校→学校）の間には作らない
+  const school2 = ev('s2', '2026-11-02', '10:00', '11:00', { place: '学校' });
+  assert.equal(travelSegments([{ ...SCH, end: '09:50' }, school2], TS).filter((x) => x.id === 'travel-s2').length, 0);
+});
+
+test('移動: 予定ごとの上書き（移動なし／別の手段と時間）', () => {
+  assert.deepEqual(travelSegments([{ ...SCH, travel: { mode: '', minutes: 0 } }], TS).map((x) => x.id), ['travel-home-s']);
+  const t = travelSegments([{ ...SCH, travel: { mode: '徒歩', minutes: 20 } }], TS).find((x) => x.id === 'travel-s');
+  assert.deepEqual([tmin(t), t.place], ['08:40-09:00', '徒歩']);
+});
+
+test('移動: 自分で「電車」の予定を入れているときは自動で作らない', () => {
+  const train = ev('t', '2026-11-02', '08:00', '08:40', { place: '電車' });
+  assert.deepEqual(travelSegments([train, SCH], TS).filter((x) => x.id === 'travel-s'), []);
+});
+
+test('移動: 空き時間・ToDo配置は移動時間を避ける。電車でできるToDoは電車の移動中に入る', () => {
+  const now = new Date(2026, 10, 2, 6, 0);
+  const f = fs2([SCH], '2026-11-02', TS, now);
+  assert.deepEqual(f, [[7 * 60, 8 * 60 + 20], [15 * 60 + 40, 23 * 60]]);
+  const todos = [{ id: 'e', title: '英単語', minutes: 30, places: ['電車'] }, { id: 'a', title: '何でも', minutes: 30 }];
+  const r = plan({ events: [SCH], todos, habits: [], settings: TS }, now);
+  assert.deepEqual(slot(r, 'e'), ['08:20-08:50']); // 電車でできる → 電車の移動中
+  assert.deepEqual(slot(r, 'a'), ['07:00-07:30']); // 何でも → 移動時間は避けて朝の空きへ
+  // 冪等
+  const r2 = plan({ events: [SCH, ...r.upserts], todos, habits: [], settings: TS }, now);
+  assert.deepEqual(r2.upserts, []);
+  assert.deepEqual(r2.removes, []);
+});

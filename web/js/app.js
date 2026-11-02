@@ -3,7 +3,7 @@ import * as sync from './sync.js';
 import * as push from './push.js';
 import * as ai from './ai.js';
 import { plan, freeSlots, freeTotal, todoCompare, dayBounds, logicalNow, normalizeEvents, normalizeEvent, HABIT_COLOR } from './scheduler.js';
-import { hasConstraint, describe } from './constraints.js';
+import { hasConstraint, describe, taskPlaceNames, eventPlaceNames, travelSegments } from './constraints.js';
 import { WD, toM, fm, dur, ymd, pd, addDays, minutesOf, label, uid } from './util.js';
 
 const COLORS = ['#2f6fed', '#e0573d', '#2e9e6b', '#d49a1a', '#8b5cf6'];
@@ -156,7 +156,8 @@ function renderDay() {
     tl.append(f);
   });
   // 重なりレイアウト
-  const L = timed.map((e) => ({ e, s: toM(e.start), f: toM(e.end), c: 0, n: 1 }));
+  const trips = travelSegments(all, s).filter((t) => t.date === sel); // 場所が変わるときの移動時間（自動）
+  const L = [...timed, ...trips].sort((a, b) => toM(a.start) - toM(b.start)).map((e) => ({ e, s: toM(e.start), f: toM(e.end), c: 0, n: 1 }));
   let grp = [], gend = 0;
   const flush = () => { const n = Math.max(0, ...grp.map((x) => x.c)) + 1; grp.forEach((x) => (x.n = n)); grp = []; };
   L.forEach((x) => {
@@ -168,7 +169,7 @@ function renderDay() {
   flush();
   const nm = ln.min;
   L.forEach((x) => {
-    const e = x.e, d = el('button', 'blk' + (e.auto ? ' auto' : ''));
+    const e = x.e, d = el(e.virtual ? 'div' : 'button', 'blk' + (e.auto ? ' auto' : '') + (e.virtual ? ' travel' : ''));
     if (sel < today || (isToday && x.f <= nm)) d.classList.add('past');
     d.style.top = Y(x.s) + 'px';
     d.style.height = Math.max(22, ((x.f - x.s) * H) / 60 - 2) + 'px';
@@ -181,7 +182,8 @@ function renderDay() {
     t.append(e.title);
     const r = rawById.get(e.id) || e; // 表示は実際の時刻
     d.append(t, el('small', 0, `${r.start}–${r.end}${e.place ? '・' + e.place : ''}${e.pinned ? '・固定' : ''}`));
-    d.onclick = () => openEvent(e.id);
+    if (e.virtual) { d.innerHTML = ''; d.append(el('div', 0, '→ ' + e.title), el('small', 0, `${e.start}–${e.end}・${e.minutes}分`)); d.style.background = ''; d.style.borderColor = ''; }
+    else d.onclick = () => openEvent(e.id);
     tl.append(d);
   });
   if (isToday && nm >= hs * 60) { const l = el('div', 'now'); l.style.top = Y(nm) + 'px'; tl.append(l); }
@@ -214,7 +216,7 @@ function toast(msg) {
 }
 
 // ---------------------------------------------------------------- 条件（場所・「あとから」）
-const placeNames = () => (S().places || []).map((p) => p.name);
+const placeNames = () => taskPlaceNames(S()); // ToDo・習慣の「できる場所」の候補
 
 function constraintFields(cur) {
   const names = placeNames();
@@ -245,6 +247,15 @@ function bindConstraints(p, cur) {
 }
 
 // ---------------------------------------------------------------- 予定シート
+/** 予定ごとの移動の指定。null=ルート設定どおり、{minutes:0}=移動なし */
+function readTravel(p) {
+  if (!$('#f-place', p).value) return null;
+  const m = $('#f-tmode', p).value, mi = $('#f-tmin', p).value;
+  if (m === '-') return { mode: '', minutes: 0 };
+  if (!m && mi === '') return null;
+  return { mode: m, minutes: mi === '' ? null : Math.max(5, Math.round(+mi)) };
+}
+
 function openEvent(id, s, e) {
   const x = id ? store.get('event', id) : null;
   // 空き枠から追加するとき：論理日の分(24:00以降あり) → 実際の日付・時刻。24:00 をまたぐ場合は 24:00 で切る
@@ -267,7 +278,12 @@ function openEvent(id, s, e) {
     <label>日付</label><input type="date" id="f-date" required value="${x ? x.date : nDate}">
     <div class="row"><div><label>開始</label><input type="time" id="f-start" value="${x ? x.start : s !== undefined ? fm(s) : ''}"></div>
       <div><label>終了</label><input type="time" id="f-end" value="${x ? x.end : e !== undefined ? fm(e) : ''}"></div></div>
-    ${x?.auto ? '' : `<label>場所（任意）</label><select id="f-place"><option value="">指定なし</option>${placeNames().map((n) => `<option value="${esc(n)}" ${x?.place === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+    ${x?.auto ? '' : `<label>場所（任意）</label><select id="f-place"><option value="">指定なし</option>${eventPlaceNames(S()).map((n) => `<option value="${esc(n)}" ${x?.place === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+    <div id="f-trip" ${x?.place ? '' : 'hidden'}>
+      <label>ここへの移動（場所が変わるときだけ使われます）</label>
+      <div class="row"><div><select id="f-tmode"><option value="">設定のルートどおり</option><option value="-" ${x?.travel && x.travel.minutes === 0 ? 'selected' : ''}>移動なし</option>${(S().modes || []).map((m) => `<option value="${esc(m.name)}" ${x?.travel?.minutes !== 0 && x?.travel?.mode === m.name ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></div>
+      <div><input type="number" id="f-tmin" min="5" max="300" step="5" placeholder="分（空ならルートどおり）" value="${x?.travel && x.travel.minutes ? x.travel.minutes : ''}"></div></div>
+    </div>
     <label>メモ（時間を空欄にすると「時間なし」の予定）</label><textarea id="f-memo" rows="2">${esc(x?.memo)}</textarea>
     <label>色</label>${colorPicker(x?.color || COLORS[0], x?.color ? [x.color] : [])}`}
     <div class="acts">
@@ -275,6 +291,8 @@ function openEvent(id, s, e) {
       <button type="button" id="f-cancel">閉じる</button>
       <button type="submit" class="pri">保存</button>
     </div></form>`, (p) => {
+    const fp = $('#f-place', p);
+    if (fp) fp.onchange = () => { $('#f-trip', p).hidden = !fp.value; };
     $('#f-cancel', p).onclick = closeSheet;
     $('#form', p).onsubmit = (ev) => {
       ev.preventDefault();
@@ -288,7 +306,7 @@ function openEvent(id, s, e) {
         const moved = date !== x.date || st !== x.start || en !== x.end;
         if (moved) store.put('event', { ...x, date, start: st, end: en, pinned: true });
       } else {
-        const o = { title: $('#f-title', p).value.trim(), date, start: st, end: en, memo: $('#f-memo', p).value, place: $('#f-place', p).value, color: $('input[name=c]:checked', p)?.value || COLORS[0] };
+        const o = { title: $('#f-title', p).value.trim(), date, start: st, end: en, memo: $('#f-memo', p).value, place: $('#f-place', p).value, travel: readTravel(p), color: $('input[name=c]:checked', p)?.value || COLORS[0] };
         store.put('event', { id: x?.id || uid(), ...o });
       }
       sel = normalizeEvent({ date, start: st, end: en }, S()).date; // 深夜の予定は前日の夜として表示
@@ -539,6 +557,16 @@ async function renderSettings() {
     <p class="hint">「移動中」にした場所（電車など）の予定のなかでは、その場所でできる ToDo を入れられます。予定には場所を付けておくと、前後の隙間の場所が決まります。</p>
   </div>
   <div class="card group">
+    <h2>移動</h2>
+    <p class="hint" style="margin-top:4px">場所が変わる予定のあいだに、ここで決めた時間だけ「移動」を確保します（最初の予定の前と、最後の予定のあとは、ふだんいる場所との行き来）。行きも帰りも同じです。</p>
+    ${(s.routes || []).map((r, i) => `<div class="srow"><span>${esc(r.from)} ⇔ ${esc(r.to)}<small>${r.minutes}分${r.mode ? '・' + esc(r.mode) : ''}</small></span><button class="ghost" data-rd="${i}" aria-label="ルートを削除">削除</button></div>`).join('')}
+    <div class="row" style="padding:8px 0 0"><div><select id="r-from">${(s.places || []).map((p) => `<option>${esc(p.name)}</option>`).join('')}</select></div><div><select id="r-to">${(s.places || []).map((p, i) => `<option ${i === 1 ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div></div>
+    <div class="row" style="padding:8px 0 10px"><div><input type="number" id="r-min" min="5" max="300" step="5" value="30" aria-label="移動時間（分）"></div><div><select id="r-mode"><option value="">手段なし</option>${(s.modes || []).map((m) => `<option>${esc(m.name)}</option>`).join('')}</select></div><div style="flex:none"><button class="pri" id="route-add">追加</button></div></div>
+    <h2>移動手段</h2>
+    ${(s.modes || []).map((m, i) => `<div class="srow"><span>${esc(m.name)}</span><label class="chk"><input type="checkbox" data-mw="${i}" ${m.work ? 'checked' : ''}> 作業できる</label><button class="ghost" data-md="${i}" aria-label="${esc(m.name)}を削除">削除</button></div>`).join('')}
+    <div class="srow"><input type="text" class="wide" id="mode-new" placeholder="手段を追加（例：タクシー）" maxlength="10"><button class="pri" id="mode-add">追加</button></div>
+  </div>
+  <div class="card group">
     <h2>通知</h2>
     <div class="srow"><span>予定の何分前に通知</span></div>
     <div class="toggles" id="notify" style="padding-bottom:10px">${NOTIFY_OPTS.map((m) => `<button type="button" class="tg ${s.notify.includes(m) ? 'on' : ''}" data-m="${m}">${m ? m + '分前' : '開始時'}</button>`).join('')}</div>
@@ -575,6 +603,28 @@ async function renderSettings() {
     const places = S().places.filter((_, i) => i !== +b.dataset.pd);
     store.setSettings({ places, ...(S().home === p.name ? { home: places[0]?.name || '' } : {}) });
   }));
+  box.querySelectorAll('[data-rd]').forEach((b) => (b.onclick = () => store.setSettings({ routes: S().routes.filter((_, i) => i !== +b.dataset.rd) })));
+  $('#route-add').onclick = () => {
+    const from = $('#r-from').value, to = $('#r-to').value, minutes = Math.round(+$('#r-min').value);
+    if (!from || !to || from === to) return toast('出発と到着は別の場所にしてください');
+    if (!(minutes > 0)) return toast('移動時間を入れてください');
+    if (S().routes.some((r) => (r.from === from && r.to === to) || (r.from === to && r.to === from))) return toast('そのルートはもうあります（削除して入れ直してください）');
+    document.activeElement?.blur?.();
+    freshNext = true;
+    store.setSettings({ routes: [...S().routes, { from, to, minutes, mode: $('#r-mode').value }] });
+  };
+  box.querySelectorAll('[data-mw]').forEach((c) => (c.onchange = () => store.setSettings({ modes: S().modes.map((m, i) => (i === +c.dataset.mw ? { ...m, work: c.checked } : m)) })));
+  box.querySelectorAll('[data-md]').forEach((b) => (b.onclick = () => {
+    const m = S().modes[+b.dataset.md];
+    if (confirm(`「${m.name}」を削除しますか？（この手段を使うルートは手段なしになります）`)) store.setSettings({ modes: S().modes.filter((_, i) => i !== +b.dataset.md), routes: S().routes.map((r) => (r.mode === m.name ? { ...r, mode: '' } : r)) });
+  }));
+  $('#mode-add').onclick = () => {
+    const name = $('#mode-new').value.trim();
+    if (!name) return;
+    if (S().modes.some((m) => m.name === name) || S().places.some((p) => p.name === name)) return toast('同じ名前があります');
+    document.activeElement?.blur?.();
+    store.setSettings({ modes: [...S().modes, { name, work: false }] });
+  };
   $('#place-add').onclick = () => {
     const name = $('#place-new').value.trim();
     if (!name) return;

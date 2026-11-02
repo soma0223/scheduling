@@ -6,7 +6,7 @@
 //  - pinned: 自動ブロックをユーザーが手で動かしたもの。再配置で動かさない
 
 import { toM, fm, ymd, pd, addDays, minutesOf, roundUp } from './util.js';
-import { DEFAULT_PLACES, hasConstraint, isTransit, matchesKey, placeOfGap } from './constraints.js';
+import { DEFAULT_PLACES, DEFAULT_MODES, hasConstraint, isTransit, matchesKey, placeOfGap, travelSegments } from './constraints.js';
 
 export const DEFAULT_SETTINGS = {
   dayStart: '07:00', // 活動開始
@@ -18,6 +18,8 @@ export const DEFAULT_SETTINGS = {
   minChunk: 30, // ToDo を分割するときの最小単位
   horizon: 7, // 何日先まで自動配置するか
   places: DEFAULT_PLACES, // 場所の一覧（予定・ToDo・習慣の条件に使う）
+  modes: DEFAULT_MODES, // 移動手段（work=乗っている間に作業できる）
+  routes: [], // 移動ルート [{from, to, minutes, mode}]（行きも帰りも同じ）
   home: '家', // 予定のない時間にいる場所
   constrainedFirst: '1', // 場所などの条件があるものを先に配置する（'1'=する）
   todoOrder: 'manual', // ToDo の割り振り順: 'manual'=手動の並び順 / 'due'=期限が近い順→優先度
@@ -87,7 +89,7 @@ export function busyIntervals(events, date, s) {
     .filter((e) => timed(e) && e.date === date)
     .map((e) => {
       const a = toM(e.start), b = toM(e.end);
-      return e.auto ? [a, b] : [a - (+s.bufferBefore || 0), b + (+s.bufferAfter || 0)];
+      return e.auto || e.virtual ? [a, b] : [a - (+s.bufferBefore || 0), b + (+s.bufferAfter || 0)];
     })
     .sort((x, y) => x[0] - y[0]);
   const out = [];
@@ -145,7 +147,8 @@ function lowerBound(date, s, now) {
 export function freeSlots(events, date, s, now) {
   const lo = lowerBound(date, s, now), hi = dayBounds(s).de;
   if (now && date < logicalNow(now, s).date) return [];
-  return gaps(busyIntervals(normalizeEvents(events, s), date, s), lo, hi).filter(([a, b]) => b - a >= (+s.minFree || 30));
+  const ev = normalizeEvents(events, s);
+  return gaps(busyIntervals([...ev, ...travelSegments(ev, s)], date, s), lo, hi).filter(([a, b]) => b - a >= (+s.minFree || 30));
 }
 
 /**
@@ -211,6 +214,7 @@ export function plan({ events, todos, habits, settings }, now = new Date(), { fr
 
   // 確定済みの予定（ここに配置済みブロックを積んでいく）
   const fixed = live.filter((e) => !e.auto);
+  fixed.push(...travelSegments(fixed, s)); // 場所が変わるときの移動時間
   const keep = [];
   const removes = [];
 
