@@ -225,13 +225,27 @@ function toast(msg) {
 // ---------------------------------------------------------------- 条件（場所・「あとから」）
 const placeNames = () => taskPlaceNames(S()); // ToDo・習慣の「できる場所」の候補
 
+/** 場所を設定に追加する。成功したら名前、失敗（空・重複）なら null */
+function addPlace(raw) {
+  const name = String(raw || '').trim().slice(0, 12);
+  if (!name) return null;
+  const st = S();
+  if ((st.places || []).some((p) => p.name === name) || (st.modes || []).some((m) => m.name === name)) { toast('同じ名前の場所があります'); return null; }
+  store.setSettings({ places: [...(st.places || []), { name, transit: false }] });
+  toast(`「${name}」を追加しました`);
+  return name;
+}
+// 入力欄で Enter を押したとき、フォーム全体が送信されないように「追加」を押す
+const enterToClick = (input, btn) => input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); btn.click(); } });
+
 function constraintFields(cur) {
   const names = placeNames();
   const sel = new Set(cur.places || []);
   const titles = [...new Set(events().filter((e) => !e.auto && e.title).map((e) => e.title))].slice(0, 30);
   const hours = cur.after?.min ? +(cur.after.min / 60).toFixed(2) : '';
   return `<label>できる場所（選ばなければ、どこでも）</label>
-    <div class="toggles" id="c-places">${names.map((n) => `<button type="button" class="tg ${sel.has(n) ? 'on' : ''}" data-p="${esc(n)}">${esc(n)}</button>`).join('')}</div>
+    <div class="toggles" id="c-places">${names.map((n) => `<button type="button" class="tg ${sel.has(n) ? 'on' : ''}" data-p="${esc(n)}">${esc(n)}</button>`).join('')}<button type="button" class="tg" id="c-addp">＋ 場所を追加</button></div>
+    <div id="c-newplace" class="row" hidden style="margin-top:8px"><div><input type="text" id="c-np" maxlength="12" placeholder="場所の名前（例：ジム）"></div><div style="flex:none"><button type="button" class="pri" id="c-npadd">追加</button></div></div>
     <label>この予定のあとから（例：「学校」の 2 時間後から）</label>
     <div class="row"><div><input type="text" id="c-key" list="c-keys" placeholder="例：学校" value="${esc(cur.after?.key)}"></div>
       <div><input type="number" id="c-hours" min="0" max="12" step="0.5" placeholder="何時間後" value="${hours}"></div></div>
@@ -244,11 +258,23 @@ function constraintFields(cur) {
 
 function bindConstraints(p, cur) {
   const set = new Set(cur.places || []);
-  p.querySelectorAll('#c-places .tg').forEach((b) => (b.onclick = () => {
+  const wire = (b) => (b.onclick = () => {
     const n = b.dataset.p;
     set.has(n) ? set.delete(n) : set.add(n);
     b.classList.toggle('on', set.has(n));
-  }));
+  });
+  p.querySelectorAll('#c-places .tg[data-p]').forEach(wire);
+  const addBtn = $('#c-addp', p), npRow = $('#c-newplace', p), npIn = $('#c-np', p);
+  addBtn.onclick = () => { npRow.hidden = !npRow.hidden; if (!npRow.hidden) npIn.focus(); };
+  $('#c-npadd', p).onclick = () => {
+    const n = addPlace(npIn.value);
+    if (!n) return;
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'tg on'; b.dataset.p = n; b.textContent = n;
+    wire(b); set.add(n); addBtn.before(b);
+    npIn.value = ''; npRow.hidden = true;
+  };
+  enterToClick(npIn, $('#c-npadd', p));
   return () => {
     const key = $('#c-key', p).value.trim();
     const h = parseFloat($('#c-hours', p).value);
@@ -259,7 +285,8 @@ function bindConstraints(p, cur) {
 // ---------------------------------------------------------------- 予定シート
 /** 予定ごとの移動の指定。null=ルート設定どおり、{minutes:0}=移動なし */
 function readTravel(p) {
-  if (!$('#f-place', p).value) return null;
+  const pv = $('#f-place', p).value;
+  if (!pv || pv === '__new__') return null;
   const m = $('#f-tmode', p).value, mi = $('#f-tmin', p).value;
   if (m === '-') return { mode: '', minutes: 0 };
   if (!m && mi === '') return null;
@@ -293,7 +320,8 @@ function openEvent(id, s, e) {
     <label>${repDays.size ? '日付（繰り返しは、この日から）' : '日付'}</label><input type="date" id="f-date" required value="${x ? x.date : nDate}">
     <div class="row"><div><label>開始</label><input type="time" id="f-start" value="${x ? x.start : s !== undefined ? fm(s) : ''}"></div>
       <div><label>終了</label><input type="time" id="f-end" value="${x ? x.end : e !== undefined ? fm(e) : ''}"></div></div>
-    ${x?.auto ? '' : `<label>場所（任意）</label><select id="f-place"><option value="">指定なし</option>${eventPlaceNames(S()).map((n) => `<option value="${esc(n)}" ${x?.place === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+    ${x?.auto ? '' : `<label>場所（任意）</label><select id="f-place"><option value="">指定なし</option>${eventPlaceNames(S()).map((n) => `<option value="${esc(n)}" ${x?.place === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}<option value="__new__">＋ 場所を追加…</option></select>
+    <div id="f-newplace" class="row" hidden style="margin-top:8px"><div><input type="text" id="f-np" maxlength="12" placeholder="場所の名前（例：ジム）"></div><div style="flex:none"><button type="button" class="pri" id="f-npadd">追加</button></div></div>
     <div id="f-trip" ${x?.place ? '' : 'hidden'}>
       <label>ここへの移動（場所が変わるときだけ使われます）</label>
       <div class="row"><div><select id="f-tmode"><option value="">設定のルートどおり</option><option value="-" ${x?.travel && x.travel.minutes === 0 ? 'selected' : ''}>移動なし</option>${(S().modes || []).map((m) => `<option value="${esc(m.name)}" ${x?.travel?.minutes !== 0 && x?.travel?.mode === m.name ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></div>
@@ -327,7 +355,25 @@ function openEvent(id, s, e) {
       openEvent(copy.id);
     };
     const fp = $('#f-place', p);
-    if (fp) fp.onchange = () => { $('#f-trip', p).hidden = !fp.value; };
+    if (fp) {
+      const showTrip = () => { $('#f-trip', p).hidden = !fp.value || fp.value === '__new__'; };
+      fp.onchange = () => {
+        $('#f-newplace', p).hidden = fp.value !== '__new__';
+        if (fp.value === '__new__') $('#f-np', p).focus();
+        showTrip();
+      };
+      $('#f-npadd', p).onclick = () => {
+        const n = addPlace($('#f-np', p).value);
+        if (!n) return;
+        const o = document.createElement('option');
+        o.value = n; o.textContent = n;
+        fp.insertBefore(o, fp.querySelector('option[value="__new__"]'));
+        fp.value = n;
+        $('#f-np', p).value = ''; $('#f-newplace', p).hidden = true;
+        showTrip();
+      };
+      enterToClick($('#f-np', p), $('#f-npadd', p));
+    }
     $('#f-cancel', p).onclick = closeSheet;
     $('#form', p).onsubmit = (ev) => {
       ev.preventDefault();
@@ -345,7 +391,7 @@ function openEvent(id, s, e) {
         const rd = [...repDays];
         const until = $('#f-until', p).value;
         const o = { title: $('#f-title', p).value.trim(), date: rd.length ? nextMatching(date, rd) : date, start: st, end: en,
-          repeat: rd.length ? { days: rd, until, tz: Intl.DateTimeFormat().resolvedOptions().timeZone } : null, skip: rd.length ? (x?.skip || []) : [], memo: $('#f-memo', p).value, place: $('#f-place', p).value, travel: readTravel(p), color: $('input[name=c]:checked', p)?.value || COLORS[0] };
+          repeat: rd.length ? { days: rd, until, tz: Intl.DateTimeFormat().resolvedOptions().timeZone } : null, skip: rd.length ? (x?.skip || []) : [], memo: $('#f-memo', p).value, place: $('#f-place', p).value === '__new__' ? '' : $('#f-place', p).value, travel: readTravel(p), color: $('input[name=c]:checked', p)?.value || COLORS[0] };
         store.put('event', { id: x?.id || uid(), ...o });
       }
       if (!(x && x.repeat && repDays.size)) sel = normalizeEvent({ date: x?.auto ? date : repDays.size ? nextMatching(date, [...repDays]) : date, start: st, end: en }, S()).date; // 深夜の予定は前日の夜として表示
