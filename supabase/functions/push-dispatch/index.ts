@@ -4,6 +4,7 @@
 
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
 import webpush from 'npm:web-push@3.6.7';
+import { recurringInstances } from './time.ts';
 
 const CATCH_UP_MS = 3 * 60 * 1000; // cron が遅れても3分以内なら送る
 
@@ -43,16 +44,25 @@ Deno.serve(async (req) => {
   }
   const maxOff = Math.max(0, ...[...offsets.values()].flat());
 
-  // 3. これから始まる予定
-  const { data: events, error: e2 } = await sb.from('records').select('user_id,id,data,starts_at')
+  // 3. これから始まる予定（単発）と、曜日で繰り返す予定の「回」
+  const loMs = now - CATCH_UP_MS, hiMs = now + (maxOff + 1) * 60000;
+  const { data: once, error: e2 } = await sb.from('records').select('user_id,id,data,starts_at')
     .eq('kind', 'event').eq('deleted', false).in('user_id', users)
-    .gte('starts_at', new Date(now - CATCH_UP_MS).toISOString())
-    .lte('starts_at', new Date(now + (maxOff + 1) * 60000).toISOString());
+    .gte('starts_at', new Date(loMs).toISOString())
+    .lte('starts_at', new Date(hiMs).toISOString());
   if (e2) return new Response(e2.message, { status: 500 });
+  const { data: masters, error: e3 } = await sb.from('records').select('user_id,id,data')
+    .eq('kind', 'event').eq('deleted', false).in('user_id', users).contains('data', { repeat: {} });
+  if (e3) return new Response(e3.message, { status: 500 });
+  // 繰り返しの親の starts_at は最初の回のもの。二重に通知しないよう単発側から外し、回として数え直す
+  const events = [
+    ...(once ?? []).filter((r) => !r.data?.repeat?.days?.length),
+    ...recurringInstances(masters ?? [], now, loMs, hiMs),
+  ];
 
   let sent = 0;
   const gone: string[] = [];
-  for (const ev of events ?? []) {
+  for (const ev of events) {
     const start = new Date(ev.starts_at).getTime();
     for (const off of offsets.get(ev.user_id) ?? []) {
       const fireAt = start - off * 60000;

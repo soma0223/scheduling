@@ -6,6 +6,7 @@
 //  - pinned: 自動ブロックをユーザーが手で動かしたもの。再配置で動かさない
 
 import { toM, fm, ymd, pd, addDays, minutesOf, roundUp } from './util.js';
+import { expandEvents } from './recurrence.js';
 import { DEFAULT_PLACES, DEFAULT_MODES, hasConstraint, isTransit, matchesKey, placeOfGap, travelSegments } from './constraints.js';
 
 export const DEFAULT_SETTINGS = {
@@ -148,7 +149,7 @@ function lowerBound(date, s, now) {
 export function freeSlots(events, date, s, now) {
   const lo = lowerBound(date, s, now), hi = dayBounds(s).de;
   if (now && date < logicalNow(now, s).date) return [];
-  const ev = normalizeEvents(events, s);
+  const ev = normalizeEvents(expandEvents(events, addDays(date, -2), addDays(date, 2)), s);
   return gaps(busyIntervals([...ev, ...travelSegments(ev, s)], date, s), lo, hi).filter(([a, b]) => b - a >= (+s.minFree || 30));
 }
 
@@ -225,7 +226,7 @@ export function plan({ events, todos, habits, settings }, now = new Date(), { fr
   const { ds, de } = dayBounds(s);
   const minChunk = Math.max(5, +s.minChunk || 30);
 
-  const live = normalizeEvents(events, s).filter((e) => !e.deleted);
+  const live = normalizeEvents(expandEvents(events, addDays(today, -3), addDays(lastDay, 3)), s).filter((e) => !e.deleted);
   const todoMap = new Map(todos.filter((t) => !t.deleted).map((t) => [t.id, t]));
   const habitMap = new Map(habits.filter((h) => !h.deleted).map((h) => [h.id, h]));
 

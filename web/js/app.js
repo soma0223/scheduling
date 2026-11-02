@@ -3,6 +3,7 @@ import * as sync from './sync.js';
 import * as push from './push.js';
 import * as ai from './ai.js';
 import { plan, freeSlots, freeTotal, todoCompare, dayBounds, logicalNow, normalizeEvents, normalizeEvent, HABIT_COLOR } from './scheduler.js';
+import { expandEvents, nextMatching, describeRepeat } from './recurrence.js';
 import { hasConstraint, describe, taskPlaceNames, eventPlaceNames, travelSegments } from './constraints.js';
 import { WD, toM, fm, dur, ymd, pd, addDays, minutesOf, label, uid } from './util.js';
 
@@ -25,7 +26,12 @@ const estimating = new Set();
 let sheetOpen = false;
 
 const S = () => store.settings();
-const events = () => store.all('event');
+// 繰り返しの予定は、見ている日の前後（と配置期間）ぶんを「回」に展開して返す
+const events = () => {
+  const t = logicalToday();
+  const lo = sel < t ? sel : t, hi = sel > addDays(t, 40) ? sel : addDays(t, 40);
+  return expandEvents(store.all('event'), addDays(lo, -9), addDays(hi, 9));
+};
 
 // ---------------------------------------------------------------- テーマ
 function applyTheme() {
@@ -179,6 +185,7 @@ function renderDay() {
     d.style.borderColor = e.color;
     const t = el('div');
     if (e.auto) t.append(el('span', 'tag', e.kind === 'todo' ? (store.get('todo', e.ref)?.done ? '✓ToDo' : 'ToDo') : '習慣'));
+    if (e.series) t.append(el('span', 'tag', '🔁'));
     t.append(e.title);
     const r = rawById.get(e.id) || e; // 表示は実際の時刻
     d.append(t, el('small', 0, `${r.start}–${r.end}${e.place ? '・' + e.place : ''}${e.pinned ? '・固定' : ''}`));
@@ -260,7 +267,10 @@ function readTravel(p) {
 }
 
 function openEvent(id, s, e) {
-  const x = id ? store.get('event', id) : null;
+  // 繰り返しの「回」は id が `親id@日付`。編集は親（すべての回）に対して行う
+  const [sid, inst] = id ? String(id).split('@') : [null, null];
+  const x = sid ? store.get('event', sid) : null;
+  const repDays = new Set(x?.repeat?.days || []);
   // 空き枠から追加するとき：論理日の分(24:00以降あり) → 実際の日付・時刻。24:00 をまたぐ場合は 24:00 で切る
   let nDate = sel;
   if (s !== undefined) {
@@ -276,17 +286,22 @@ function openEvent(id, s, e) {
       ? `<div class="acts"><button type="button" class="ok" id="f-done">${src?.done ? '未完了に戻す' : '✓ ToDo を完了'}</button>${x.pinned ? '<button type="button" id="f-unpin">固定を解除</button>' : ''}</div>`
       : `<div class="acts"><button type="button" id="f-skip">この日はスキップ</button>${x.pinned ? '<button type="button" id="f-unpin">固定を解除</button>' : ''}</div>`)
     : '';
-  openSheet(`<form id="form">${head}${autoActs}
+  const instActs = inst && x?.repeat ? `<p class="note">${esc(describeRepeat(x.repeat, WD))}の予定です。下の変更は、すべての回に反映されます。</p>
+    <div class="acts"><button type="button" id="f-skipday">この日（${inst.slice(5).replace('-', '/')}）だけ削除</button><button type="button" id="f-oneoff">この日だけ変更</button></div>` : '';
+  openSheet(`<form id="form">${head}${autoActs}${instActs}
     <label>タイトル</label><input type="text" id="f-title" required value="${esc(x?.title)}" placeholder="例：打ち合わせ" ${x?.auto ? 'readonly' : ''}>
-    <label>日付</label><input type="date" id="f-date" required value="${x ? x.date : nDate}">
+    <label>${repDays.size ? '日付（繰り返しは、この日から）' : '日付'}</label><input type="date" id="f-date" required value="${x ? x.date : nDate}">
     <div class="row"><div><label>開始</label><input type="time" id="f-start" value="${x ? x.start : s !== undefined ? fm(s) : ''}"></div>
       <div><label>終了</label><input type="time" id="f-end" value="${x ? x.end : e !== undefined ? fm(e) : ''}"></div></div>
     ${x?.auto ? '' : `<label>場所（任意）</label><select id="f-place"><option value="">指定なし</option>${eventPlaceNames(S()).map((n) => `<option value="${esc(n)}" ${x?.place === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
     <div id="f-trip" ${x?.place ? '' : 'hidden'}>
       <label>ここへの移動（場所が変わるときだけ使われます）</label>
       <div class="row"><div><select id="f-tmode"><option value="">設定のルートどおり</option><option value="-" ${x?.travel && x.travel.minutes === 0 ? 'selected' : ''}>移動なし</option>${(S().modes || []).map((m) => `<option value="${esc(m.name)}" ${x?.travel?.minutes !== 0 && x?.travel?.mode === m.name ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></div>
-      <div><input type="number" id="f-tmin" min="5" max="300" step="5" placeholder="分（空ならルートどおり）" value="${x?.travel && x.travel.minutes ? x.travel.minutes : ''}"></div></div>
+      <div><input type="number" id="f-tmin" min="5" max="300" step="5" placeholder="分（空=自動）" value="${x?.travel && x.travel.minutes ? x.travel.minutes : ''}"></div></div>
     </div>
+    <label>繰り返し（曜日を選ぶと、毎週その曜日に入ります）</label>
+    <div class="toggles" id="f-rep">${[1, 2, 3, 4, 5, 6, 0].map((d) => `<button type="button" class="tg ${repDays.has(d) ? 'on' : ''}" data-d="${d}">${WD[d]}</button>`).join('')}</div>
+    <div id="f-until-wrap" ${repDays.size ? '' : 'hidden'}><label>いつまで（空欄なら続きます）</label><input type="date" id="f-until" value="${esc(x?.repeat?.until)}"></div>
     <label>メモ（時間を空欄にすると「時間なし」の予定）</label><textarea id="f-memo" rows="2">${esc(x?.memo)}</textarea>
     <label>色</label>${colorPicker(x?.color || COLORS[0], x?.color ? [x.color] : [])}`}
     <div class="acts">
@@ -294,6 +309,23 @@ function openEvent(id, s, e) {
       <button type="button" id="f-cancel">閉じる</button>
       <button type="submit" class="pri">保存</button>
     </div></form>`, (p) => {
+    p.querySelectorAll('#f-rep .tg').forEach((b) => (b.onclick = () => {
+      const d = +b.dataset.d;
+      repDays.has(d) ? repDays.delete(d) : repDays.add(d);
+      b.classList.toggle('on', repDays.has(d));
+      $('#f-until-wrap', p).hidden = !repDays.size;
+    }));
+    const skipDay = $('#f-skipday', p);
+    if (skipDay) skipDay.onclick = () => { store.put('event', { ...x, skip: [...new Set([...(x.skip || []), inst])] }); closeSheet(); toast('この日だけ削除しました'); };
+    const oneOff = $('#f-oneoff', p);
+    if (oneOff) oneOff.onclick = () => {
+      // この日の回を外して、同じ内容の単発の予定を作る（そちらを自由に直せる）
+      const { id: _i, repeat: _r, skip: _s, updatedAt: _u, deleted: _d, series: _se, ...rest } = x;
+      const copy = { ...rest, id: uid(), date: inst };
+      store.batch(({ put }) => { put('event', { ...x, skip: [...new Set([...(x.skip || []), inst])] }); put('event', copy); });
+      closeSheet();
+      openEvent(copy.id);
+    };
     const fp = $('#f-place', p);
     if (fp) fp.onchange = () => { $('#f-trip', p).hidden = !fp.value; };
     $('#f-cancel', p).onclick = closeSheet;
@@ -309,16 +341,20 @@ function openEvent(id, s, e) {
         const moved = date !== x.date || st !== x.start || en !== x.end;
         if (moved) store.put('event', { ...x, date, start: st, end: en, pinned: true });
       } else {
-        const o = { title: $('#f-title', p).value.trim(), date, start: st, end: en, memo: $('#f-memo', p).value, place: $('#f-place', p).value, travel: readTravel(p), color: $('input[name=c]:checked', p)?.value || COLORS[0] };
+        if (repDays.size && !st) return toast('繰り返しの予定には時間が必要です');
+        const rd = [...repDays];
+        const until = $('#f-until', p).value;
+        const o = { title: $('#f-title', p).value.trim(), date: rd.length ? nextMatching(date, rd) : date, start: st, end: en,
+          repeat: rd.length ? { days: rd, until, tz: Intl.DateTimeFormat().resolvedOptions().timeZone } : null, skip: rd.length ? (x?.skip || []) : [], memo: $('#f-memo', p).value, place: $('#f-place', p).value, travel: readTravel(p), color: $('input[name=c]:checked', p)?.value || COLORS[0] };
         store.put('event', { id: x?.id || uid(), ...o });
       }
-      sel = normalizeEvent({ date, start: st, end: en }, S()).date; // 深夜の予定は前日の夜として表示
+      if (!(x && x.repeat && repDays.size)) sel = normalizeEvent({ date: x?.auto ? date : repDays.size ? nextMatching(date, [...repDays]) : date, start: st, end: en }, S()).date; // 深夜の予定は前日の夜として表示
       closeSheet();
     };
     const del = $('#f-del', p);
     if (del) del.onclick = () => {
       if (x.auto) { closeSheet(); return x.kind === 'todo' ? openTodo(x.ref) : openHabit(x.ref); }
-      if (confirm('この予定を削除しますか？')) { store.remove('event', x.id); closeSheet(); }
+      if (confirm(x.repeat ? 'この繰り返しの予定を、すべての回ごと削除しますか？' : 'この予定を削除しますか？')) { store.remove('event', x.id); closeSheet(); }
     };
     const done = $('#f-done', p);
     if (done && src) done.onclick = () => { store.put('todo', { ...src, done: !src.done, doneAt: src.done ? null : new Date().toISOString() }); toast(src.done ? '未完了に戻しました' : '完了！おつかれさまでした'); closeSheet(); };

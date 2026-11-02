@@ -414,3 +414,38 @@ test('何時以降: 深夜まで続く活動時間では 0:30 以降が翌日側
   assert.deepEqual(r.upserts.map((e) => `${e.date} ${e.start}`), ['2026-11-03 00:30']);
   assert.deepEqual(plan({ events: r.upserts, todos, habits: [], settings: s }, now).upserts, []);
 });
+
+// ---- 曜日の繰り返し予定 ----
+import { expandEvents, nextMatching, isRecurring } from '../web/js/recurrence.js';
+const CLASS = ev('cls', '2026-11-02', '09:00', '15:00', { title: '授業', place: '学校', repeat: { days: [1, 2, 3, 4, 5], until: '' }, skip: ['2026-11-04'] });
+
+test('繰り返し: 曜日の回に展開／スキップ日・期限・開始日前は出ない', () => {
+  const out = expandEvents([CLASS], '2026-11-01', '2026-11-09');
+  assert.deepEqual(out.map((e) => e.date), ['2026-11-02', '2026-11-03', '2026-11-05', '2026-11-06', '2026-11-09']); // 水(4)はスキップ、土日なし
+  assert.equal(out[0].id, 'cls@2026-11-02');
+  assert.equal(out[0].series, 'cls');
+  assert.deepEqual(expandEvents([{ ...CLASS, repeat: { days: [1], until: '2026-11-03' } }], '2026-10-26', '2026-11-30').map((e) => e.date), ['2026-11-02']);
+  // 展開済みのものをもう一度通しても増えない／削除済みの親は出ない
+  assert.equal(expandEvents(out, '2026-11-01', '2026-11-09').length, out.length);
+  assert.equal(isRecurring({ ...CLASS, deleted: true }), true);
+  assert.deepEqual(expandEvents([{ ...CLASS, deleted: true }], '2026-11-01', '2026-11-09').filter((e) => !e.deleted), []);
+  assert.equal(nextMatching('2026-11-07', [1, 3]), '2026-11-09'); // 土 → 次の月
+});
+
+test('繰り返し: 空き時間・ToDo 配置・移動時間・「あとから」に効く。冪等', () => {
+  const now = new Date(2026, 10, 3, 6, 0); // 火曜
+  const f = fs2([CLASS], '2026-11-03', S, now); // 親だけ渡しても展開される
+  assert.deepEqual(f, [[7 * 60, 9 * 60], [15 * 60, 23 * 60]]);
+  // 水曜はスキップ → 終日空き
+  assert.deepEqual(fs2([CLASS], '2026-11-04', S, now), [[7 * 60, 23 * 60]]);
+  // 土曜は繰り返し対象外
+  assert.deepEqual(fs2([CLASS], '2026-11-07', S, now), [[7 * 60, 23 * 60]]);
+  const habits = [{ id: 'gym', title: 'ジム', days: [2], from: '07:00', to: '22:00', minutes: 60, after: { key: '授業', min: 120 } }];
+  const todos = [{ id: 't', title: 'T', minutes: 60 }];
+  const r = plan({ events: [CLASS], todos, habits, settings: { ...S, horizon: 2 } }, now);
+  assert.deepEqual(r.upserts.filter((e) => e.ref === 'gym').map((e) => `${e.date} ${e.start}`), ['2026-11-03 17:00']); // 授業の終了(15:00)+2時間
+  assert.ok(r.upserts.every((e) => !(e.date === '2026-11-03' && e.start < '15:00' && e.end > '09:00')), '授業の時間に配置された');
+  const r2 = plan({ events: [CLASS, ...r.upserts], todos, habits, settings: { ...S, horizon: 2 } }, now);
+  assert.deepEqual(r2.upserts, []);
+  assert.deepEqual(r2.removes, []);
+});
