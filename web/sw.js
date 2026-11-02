@@ -1,10 +1,10 @@
 // Service Worker: オフライン対応 + Web Push 受信
-const VERSION = 'v1';
+const VERSION = 'v2';
 const SHELL = `shell-${VERSION}`;
 const RUNTIME = `runtime-${VERSION}`;
 const ASSETS = [
   './', 'index.html', 'styles.css', 'config.js', 'manifest.webmanifest',
-  'js/app.js', 'js/store.js', 'js/sync.js', 'js/push.js', 'js/ai.js', 'js/scheduler.js', 'js/util.js',
+  'js/app.js', 'js/store.js', 'js/sync.js', 'js/push.js', 'js/ai.js', 'js/scheduler.js', 'js/constraints.js', 'js/util.js',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/badge-96.png', 'icons/apple-touch-icon.png',
 ];
 

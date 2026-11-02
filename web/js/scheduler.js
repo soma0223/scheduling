@@ -6,6 +6,7 @@
 //  - pinned: 自動ブロックをユーザーが手で動かしたもの。再配置で動かさない
 
 import { toM, fm, ymd, pd, addDays, minutesOf, roundUp } from './util.js';
+import { DEFAULT_PLACES, hasConstraint, isTransit, matchesKey, placeOfGap } from './constraints.js';
 
 export const DEFAULT_SETTINGS = {
   dayStart: '07:00', // 活動開始
@@ -15,6 +16,9 @@ export const DEFAULT_SETTINGS = {
   minFree: 30, // この分数以上の隙間を「空き時間」として表示
   minChunk: 30, // ToDo を分割するときの最小単位
   horizon: 7, // 何日先まで自動配置するか
+  places: DEFAULT_PLACES, // 場所の一覧（予定・ToDo・習慣の条件に使う）
+  home: '家', // 予定のない時間にいる場所
+  constrainedFirst: '1', // 場所などの条件があるものを先に配置する（'1'=する）
   todoOrder: 'manual', // ToDo の割り振り順: 'manual'=手動の並び順 / 'due'=期限が近い順→優先度
   notify: [10], // 何分前に通知するか（複数可）
   theme: 'auto',
@@ -89,6 +93,40 @@ export function freeSlots(events, date, s, now) {
   return gaps(busyIntervals(events, date, s), lo, hi).filter(([a, b]) => b - a >= (+s.minFree || 30));
 }
 
+/**
+ * item（ToDo/習慣）が入れられる区間の一覧。poolArr は「その時点で埋まっている予定」。
+ * 場所の条件があれば、その場所とみなせる隙間（と移動中の予定の中）だけに絞り、
+ * 「◯◯のあとから」があれば、その日の該当予定の終了＋指定時間より前を落とす。
+ */
+function candidatesFor(item, date, poolArr, lo, hi, s) {
+  const free = gaps(busyIntervals(poolArr, date, s), lo, hi);
+  if (!hasConstraint(item)) return free;
+  const day = poolArr.filter((e) => !e.deleted && e.date === date && e.start && e.end);
+  const users = day.filter((e) => !e.auto).sort((a, b) => toM(a.start) - toM(b.start));
+  const placedEv = users.filter((e) => e.place);
+  let out = free;
+  const allowed = item.places || [];
+  if (allowed.length) {
+    out = free.filter(([a, b]) => allowed.includes(placeOfGap(placedEv, a, b, s)));
+    const autoBusy = busyIntervals(day.filter((e) => e.auto), date, s);
+    for (const e of placedEv) {
+      if (!isTransit(e.place, s) || !allowed.includes(e.place)) continue;
+      const a = Math.max(toM(e.start), lo), b = Math.min(toM(e.end), hi);
+      if (b > a) out = out.concat(gaps(autoBusy, a, b));
+    }
+    out = out.slice().sort((x, y) => x[0] - y[0]);
+  }
+  const key = item.after && item.after.key;
+  if (key) {
+    const ends = users.filter((e) => matchesKey(e, key)).map((e) => toM(e.end));
+    if (ends.length) {
+      const lo2 = Math.max(...ends) + (+item.after.min || 0);
+      out = out.map(([a, b]) => [Math.max(a, lo2), b]).filter(([a, b]) => b > a);
+    }
+  }
+  return out;
+}
+
 const sameAuto = (a, b) =>
   a.title === b.title && a.date === b.date && a.start === b.start && a.end === b.end &&
   a.color === b.color && !!a.pinned === !!b.pinned && a.ref === b.ref && a.kind === b.kind;
@@ -124,6 +162,12 @@ export function plan({ events, todos, habits, settings }, now = new Date()) {
     const a = toM(e.start), b = toM(e.end);
     return busyIntervals(pool, e.date, s).some(([x, y]) => a < y && b > x);
   };
+  // 既存ブロックが（場所・「あとから」の条件も含めて）まだ有効か。poolArr に e 自身は含めないこと
+  const okBlock = (e, src, poolArr) => {
+    if (!hasConstraint(src)) return !conflicts(e, poolArr);
+    const a = toM(e.start), b = toM(e.end);
+    return candidatesFor(src, e.date, poolArr, ds, de, s).some(([x, y]) => x <= a && b <= y);
+  };
 
   // --- 1. 既存の自動ブロックを仕分け ---
   const autos = live.filter((e) => e.auto).sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start));
@@ -140,7 +184,7 @@ export function plan({ events, todos, habits, settings }, now = new Date()) {
       const ok = (src.days || []).includes(pd(a.date).getDay()) && !(src.skip || []).includes(a.date) &&
         toM(a.start) >= toM(src.from || s.dayStart) && toM(a.end) <= toM(src.to || s.dayEnd) &&
         toM(a.end) - toM(a.start) === (+src.minutes || 30) &&
-        fitsDay(a) && !conflicts(a, [...fixed, ...keep]) &&
+        fitsDay(a) && okBlock(a, src, [...fixed, ...keep]) &&
         !keep.some((k) => k.kind === 'habit' && k.ref === a.ref && k.date === a.date);
       if (ok) keep.push(a); else removes.push(a.id);
     } else {
@@ -167,14 +211,15 @@ export function plan({ events, todos, habits, settings }, now = new Date()) {
     const n = need.get(ref) || 0;
     const total = list.reduce((a, e) => a + toM(e.end) - toM(e.start), 0);
     const pool = [...fixed, ...keep];
-    const valid = list.every((e) => fitsDay(e) && !conflicts(e, pool) && !conflicts(e, list.filter((x) => x !== e)));
+    const src = todoMap.get(ref);
+    const valid = list.every((e) => fitsDay(e) && okBlock(e, src, [...pool, ...list.filter((x) => x !== e)]));
     if (valid && total === n && n > 0) { keep.push(...list); need.set(ref, 0); }
     else removes.push(...list.map((e) => e.id));
   }
 
   const placed = [];
   const pool = () => [...fixed, ...keep, ...placed];
-  const freeOn = (date, lo, hi) => gaps(busyIntervals(pool(), date, s), Math.max(lo, lowerBound(date, s, now)), hi);
+  const cand = (item, date, lo, hi) => candidatesFor(item, date, pool(), Math.max(lo, lowerBound(date, s, now)), hi, s);
   const unplaced = { todos: [], habits: [] };
 
   // --- 2. 習慣：曜日・時間帯の範囲で最初に入る空きへ ---
@@ -188,7 +233,7 @@ export function plan({ events, todos, habits, settings }, now = new Date()) {
       if (keep.some((k) => k.kind === 'habit' && k.ref === h.id && k.date === d)) continue;
       const m = +h.minutes || 30;
       const lo = Math.max(ds, toM(h.from || s.dayStart)), hi = Math.min(de, toM(h.to || s.dayEnd));
-      const g = freeOn(d, lo, hi).find(([a, b]) => b - a >= m);
+      const g = cand(h, d, lo, hi).find(([a, b]) => b - a >= m);
       if (!g) {
         // 今日のもう過ぎた時間帯は「未配置」扱いにしない
         if (!(d === today && lowerBound(d, s, now) + m > hi)) unplaced.habits.push({ id: h.id, date: d });
@@ -199,9 +244,11 @@ export function plan({ events, todos, habits, settings }, now = new Date()) {
   }
 
   // --- 3. ToDo：設定した順（手動 or 期限順）に、上のものから空きを埋めていく ---
-  const todoList = [...todoMap.values()]
+  let todoList = [...todoMap.values()]
     .filter((t) => (need.get(t.id) || 0) > 0)
     .sort(todoCompare(s));
+  // 条件つき（場所など）は入れる枠が限られるので先に配置する。条件なしの ToDo が貴重な枠を先に使わないように
+  if (String(s.constrainedFirst) !== '0') todoList = [...todoList.filter(hasConstraint), ...todoList.filter((t) => !hasConstraint(t))];
   for (const t of todoList) {
     let rest = need.get(t.id);
     const before = days.filter((d) => !t.due || d <= t.due);
@@ -210,14 +257,14 @@ export function plan({ events, todos, habits, settings }, now = new Date()) {
 
     const whole = (ds_) => {
       for (const d of ds_) {
-        const g = freeOn(d, ds, de).find(([a, b]) => b - a >= rest);
+        const g = cand(t, d, ds, de).find(([a, b]) => b - a >= rest);
         if (g) { put(d, g[0], g[0] + rest); rest = 0; return true; }
       }
       return false;
     };
     const split = (ds_) => {
       for (const d of ds_) {
-        for (const [a, b] of freeOn(d, ds, de)) {
+        for (const [a, b] of cand(t, d, ds, de)) {
           if (rest <= 0) return;
           let len = Math.min(b - a, rest);
           if (len < rest && rest - len < minChunk) len = rest - minChunk; // 端数を残さない

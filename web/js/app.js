@@ -3,6 +3,7 @@ import * as sync from './sync.js';
 import * as push from './push.js';
 import * as ai from './ai.js';
 import { plan, freeSlots, freeTotal, todoCompare, HABIT_COLOR } from './scheduler.js';
+import { hasConstraint, describe } from './constraints.js';
 import { WD, toM, fm, dur, ymd, pd, addDays, minutesOf, label, uid } from './util.js';
 
 const COLORS = ['#2f6fed', '#e0573d', '#2e9e6b', '#d49a1a', '#8b5cf6'];
@@ -162,7 +163,7 @@ function renderDay() {
     const t = el('div');
     if (e.auto) t.append(el('span', 'tag', e.kind === 'todo' ? (store.get('todo', e.ref)?.done ? '✓ToDo' : 'ToDo') : '習慣'));
     t.append(e.title);
-    d.append(t, el('small', 0, `${e.start}–${e.end}${e.pinned ? '・固定' : ''}`));
+    d.append(t, el('small', 0, `${e.start}–${e.end}${e.place ? '・' + e.place : ''}${e.pinned ? '・固定' : ''}`));
     d.onclick = () => openEvent(e.id);
     tl.append(d);
   });
@@ -195,6 +196,37 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.remove('on'), 2400);
 }
 
+// ---------------------------------------------------------------- 条件（場所・「あとから」）
+const placeNames = () => (S().places || []).map((p) => p.name);
+
+function constraintFields(cur) {
+  const names = placeNames();
+  const sel = new Set(cur.places || []);
+  const titles = [...new Set(events().filter((e) => !e.auto && e.title).map((e) => e.title))].slice(0, 30);
+  const hours = cur.after?.min ? +(cur.after.min / 60).toFixed(2) : '';
+  return `<label>できる場所（選ばなければ、どこでも）</label>
+    <div class="toggles" id="c-places">${names.map((n) => `<button type="button" class="tg ${sel.has(n) ? 'on' : ''}" data-p="${esc(n)}">${esc(n)}</button>`).join('')}</div>
+    <label>この予定のあとから（例：「学校」の 2 時間後から）</label>
+    <div class="row"><div><input type="text" id="c-key" list="c-keys" placeholder="例：学校" value="${esc(cur.after?.key)}"></div>
+      <div><input type="number" id="c-hours" min="0" max="12" step="0.5" placeholder="何時間後" value="${hours}"></div></div>
+    <datalist id="c-keys">${[...names, ...titles].map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
+    <p class="note">その日にその予定があるときだけ有効です。無い日は制限なし。</p>`;
+}
+
+function bindConstraints(p, cur) {
+  const set = new Set(cur.places || []);
+  p.querySelectorAll('#c-places .tg').forEach((b) => (b.onclick = () => {
+    const n = b.dataset.p;
+    set.has(n) ? set.delete(n) : set.add(n);
+    b.classList.toggle('on', set.has(n));
+  }));
+  return () => {
+    const key = $('#c-key', p).value.trim();
+    const h = parseFloat($('#c-hours', p).value);
+    return { places: [...set], after: key ? { key, min: Math.max(0, Math.round((Number.isFinite(h) ? h : 0) * 60)) } : null };
+  };
+}
+
 // ---------------------------------------------------------------- 予定シート
 function openEvent(id, s, e) {
   const x = id ? store.get('event', id) : null;
@@ -212,7 +244,8 @@ function openEvent(id, s, e) {
     <label>日付</label><input type="date" id="f-date" required value="${x ? x.date : sel}">
     <div class="row"><div><label>開始</label><input type="time" id="f-start" value="${x ? x.start : s !== undefined ? fm(s) : ''}"></div>
       <div><label>終了</label><input type="time" id="f-end" value="${x ? x.end : e !== undefined ? fm(e) : ''}"></div></div>
-    ${x?.auto ? '' : `<label>メモ（時間を空欄にすると「時間なし」の予定）</label><textarea id="f-memo" rows="2">${esc(x?.memo)}</textarea>
+    ${x?.auto ? '' : `<label>場所（任意）</label><select id="f-place"><option value="">指定なし</option>${placeNames().map((n) => `<option value="${esc(n)}" ${x?.place === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+    <label>メモ（時間を空欄にすると「時間なし」の予定）</label><textarea id="f-memo" rows="2">${esc(x?.memo)}</textarea>
     <label>色</label>${colorPicker(x?.color || COLORS[0], x?.color ? [x.color] : [])}`}
     <div class="acts">
       ${x ? `<button type="button" class="del" id="f-del">${x.auto ? (x.kind === 'todo' ? 'ToDo を開く' : '習慣を開く') : '削除'}</button>` : ''}
@@ -232,7 +265,7 @@ function openEvent(id, s, e) {
         const moved = date !== x.date || st !== x.start || en !== x.end;
         if (moved) store.put('event', { ...x, date, start: st, end: en, pinned: true });
       } else {
-        const o = { title: $('#f-title', p).value.trim(), date, start: st, end: en, memo: $('#f-memo', p).value, color: $('input[name=c]:checked', p)?.value || COLORS[0] };
+        const o = { title: $('#f-title', p).value.trim(), date, start: st, end: en, memo: $('#f-memo', p).value, place: $('#f-place', p).value, color: $('input[name=c]:checked', p)?.value || COLORS[0] };
         store.put('event', { id: x?.id || uid(), ...o });
       }
       sel = date;
@@ -284,11 +317,12 @@ function renderTodos() {
     else if (t.minutes) m.append(el('span', 0, `約${dur(+t.minutes)}${t.estSource === 'ai' ? ' ✨' : ''}`));
     if (t.due) m.append(el('span', t.due < ymd(new Date()) ? 'ng' : '', `期限 ${label(t.due)}`));
     if (+t.priority === 3) m.append(el('span', 'ng', '優先度 高'));
+    if (hasConstraint(t)) m.append(el('span', 'pill', describe(t)));
     if (!t.done && t.minutes) {
       const pl = placementOf(t.id);
       const un = unplaced.todos.find((u) => u.id === t.id);
       if (pl.length) m.append(el('span', 'ok', '→ ' + pl.map((e) => `${label(e.date)} ${e.start}`).join(', ')));
-      if (un) m.append(el('span', 'ng', `⚠ ${dur(un.minutes)}ぶん空きが足りません`));
+      if (un) m.append(el('span', 'ng', `⚠ ${dur(un.minutes)}ぶん${hasConstraint(t) ? '条件に合う空きがありません' : '空きが足りません'}`));
     }
     main.append(m);
     main.onclick = () => openTodo(t.id);
@@ -364,10 +398,12 @@ function openTodo(id) {
     ${t.estReason ? `<p class="note">${t.estSource === 'ai' ? '✨ AI' : '目安'}：${esc(t.estReason)}</p>` : ''}
     <button type="button" class="ghost" id="t-ai" style="margin-top:6px">✨ 所要時間を見積もり直す</button>
     <label>優先度</label><div class="toggles" id="t-pri">${[3, 2, 1].map((p) => `<button type="button" class="tg ${(+t.priority || 2) === p ? 'on' : ''}" data-p="${p}">${PRI[p]}</button>`).join('')}</div>
+    ${constraintFields(t)}
     <label>メモ</label><textarea id="t-memo" rows="2">${esc(t.memo)}</textarea>
     ${pl.length ? `<p class="note">配置：${pl.map((e) => `${label(e.date)} ${e.start}–${e.end}`).join('、')}</p>` : ''}
     <div class="acts"><button type="button" class="del" id="t-del">削除</button><button type="button" id="t-cancel">閉じる</button><button type="submit" class="pri">保存</button></div>
   </form>`, (p) => {
+    const getC = bindConstraints(p, t);
     let pri = +t.priority || 2;
     p.querySelectorAll('#t-pri .tg').forEach((b) => (b.onclick = () => { pri = +b.dataset.p; p.querySelectorAll('#t-pri .tg').forEach((x) => x.classList.toggle('on', x === b)); }));
     $('#t-cancel', p).onclick = closeSheet;
@@ -376,7 +412,7 @@ function openTodo(id) {
     $('#form', p).onsubmit = (e) => {
       e.preventDefault();
       const minutes = Math.max(0, Math.round((+$('#t-min', p).value || 0) / 5) * 5);
-      store.put('todo', { ...t, title: $('#t-title', p).value.trim(), minutes, due: $('#t-due', p).value, priority: pri, memo: $('#t-memo', p).value, ...(minutes !== +t.minutes ? { estSource: 'manual', estReason: '' } : {}) });
+      store.put('todo', { ...t, title: $('#t-title', p).value.trim(), minutes, due: $('#t-due', p).value, priority: pri, memo: $('#t-memo', p).value, ...getC(), ...(minutes !== +t.minutes ? { estSource: 'manual', estReason: '' } : {}) });
       closeSheet();
     };
   });
@@ -401,6 +437,7 @@ function renderHabits() {
     m.append(el('span', 0, `${h.from}–${h.to} の間に ${dur(+h.minutes || 30)}`));
     const next = events().filter((e) => e.auto && e.kind === 'habit' && e.ref === h.id && e.date >= today).sort((a, c) => (a.date + a.start).localeCompare(c.date + c.start))[0];
     if (next) m.append(el('span', 'ok', `次回 ${label(next.date)} ${next.start}`));
+    if (hasConstraint(h)) m.append(el('span', 'pill', describe(h)));
     const miss = unplaced.habits.filter((x) => x.id === h.id).length;
     if (miss) m.append(el('span', 'ng', `⚠ ${miss}日ぶん空きなし`));
     main.append(m);
@@ -421,9 +458,11 @@ function openHabit(id) {
     <label>この時間帯のどこかで</label>
     <div class="row"><div><input type="time" id="h-from" value="${cur.from}" required></div><div><input type="time" id="h-to" value="${cur.to}" required></div></div>
     <label>所要時間（分）</label><input type="number" id="h-min" min="5" max="600" step="5" value="${+cur.minutes || 30}" required>
+    ${constraintFields(cur)}
     <label>色</label>${colorPicker(cur.color, [HABIT_COLOR, cur.color])}
     <div class="acts">${h ? '<button type="button" class="del" id="h-del">削除</button>' : ''}<button type="button" id="h-cancel">閉じる</button><button type="submit" class="pri">保存</button></div>
   </form>`, (p) => {
+    const getC = bindConstraints(p, cur);
     const days = new Set(cur.days);
     p.querySelectorAll('#h-days .tg').forEach((b) => (b.onclick = () => { const d = +b.dataset.d; days.has(d) ? days.delete(d) : days.add(d); b.classList.toggle('on', days.has(d)); }));
     $('#h-cancel', p).onclick = closeSheet;
@@ -433,7 +472,7 @@ function openHabit(id) {
       const from = $('#h-from', p).value, to = $('#h-to', p).value, minutes = +$('#h-min', p).value;
       if (toM(to) - toM(from) < minutes) return toast('時間帯が所要時間より短いです');
       if (!days.size) return toast('曜日を1つ以上選んでください');
-      store.put('habit', { ...(h || { id: uid(), skip: [] }), title: $('#h-title', p).value.trim(), days: [...days], from, to, minutes, color: $('input[name=c]:checked', p)?.value || HABIT_COLOR });
+      store.put('habit', { ...(h || { id: uid(), skip: [] }), title: $('#h-title', p).value.trim(), days: [...days], from, to, minutes, ...getC(), color: $('input[name=c]:checked', p)?.value || HABIT_COLOR });
       closeSheet();
     };
   });
@@ -463,8 +502,16 @@ async function renderSettings() {
   <div class="card group">
     <h2>自動配置</h2>
     <div class="srow"><span>ToDo を分割する最小単位</span><input type="number" min="5" max="240" step="5" data-k="minChunk" value="${s.minChunk}">分</div>
+    <div class="srow"><span>条件つきを先に入れる<small>場所などの条件があるものは入れる枠が限られるので、先に配置します</small></span><select data-k="constrainedFirst"><option value="1">先に入れる</option><option value="0">並び順どおり</option></select></div>
     <div class="srow"><span>ToDo を入れる順番<small>手動：ToDo 画面の ▲▼ で並べた順</small></span><select data-k="todoOrder"><option value="manual">手動の順番</option><option value="due">期限が近い順</option></select></div>
     <div class="srow"><span>配置する期間</span><input type="number" min="1" max="28" step="1" data-k="horizon" value="${s.horizon}">日</div>
+  </div>
+  <div class="card group">
+    <h2>場所</h2>
+    <div class="srow"><span>ふだんいる場所<small>予定のない時間は、ここにいるとみなします</small></span><select data-k="home">${(s.places || []).map((p) => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('')}</select></div>
+    ${(s.places || []).map((p, i) => `<div class="srow"><span>${esc(p.name)}</span><label class="chk"><input type="checkbox" data-pt="${i}" ${p.transit ? 'checked' : ''}> 移動中</label><button class="ghost" data-pd="${i}" aria-label="${esc(p.name)}を削除">削除</button></div>`).join('')}
+    <div class="srow"><input type="text" class="wide" id="place-new" placeholder="場所を追加（例：ジム）" maxlength="12"><button class="pri" id="place-add">追加</button></div>
+    <p class="hint">「移動中」にした場所（電車など）の予定のなかでは、その場所でできる ToDo を入れられます。予定には場所を付けておくと、前後の隙間の場所が決まります。</p>
   </div>
   <div class="card group">
     <h2>通知</h2>
@@ -494,6 +541,21 @@ async function renderSettings() {
   <p class="hint" style="text-align:center">マイスケジュール PWA</p>`;
   box.querySelector('select[data-k=theme]').value = s.theme || 'auto';
   box.querySelector('select[data-k=todoOrder]').value = s.todoOrder || 'manual';
+  box.querySelector('select[data-k=constrainedFirst]').value = String(s.constrainedFirst) === '0' ? '0' : '1';
+  box.querySelector('select[data-k=home]').value = s.home || '家';
+  box.querySelectorAll('[data-pt]').forEach((c) => (c.onchange = () => store.setSettings({ places: S().places.map((p, i) => (i === +c.dataset.pt ? { ...p, transit: c.checked } : p)) })));
+  box.querySelectorAll('[data-pd]').forEach((b) => (b.onclick = () => {
+    const p = S().places[+b.dataset.pd];
+    if (!confirm(`「${p.name}」を削除しますか？（この場所を指定した予定・ToDo の条件は効かなくなります）`)) return;
+    const places = S().places.filter((_, i) => i !== +b.dataset.pd);
+    store.setSettings({ places, ...(S().home === p.name ? { home: places[0]?.name || '' } : {}) });
+  }));
+  $('#place-add').onclick = () => {
+    const name = $('#place-new').value.trim();
+    if (!name) return;
+    if (S().places.some((p) => p.name === name)) return toast('同じ名前の場所があります');
+    store.setSettings({ places: [...S().places, { name, transit: false }] });
+  };
   box.querySelectorAll('[data-k]').forEach((inp) => (inp.onchange = () => {
     const k = inp.dataset.k;
     let v = inp.value;
