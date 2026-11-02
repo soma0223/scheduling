@@ -2,7 +2,7 @@ import * as store from './store.js';
 import * as sync from './sync.js';
 import * as push from './push.js';
 import * as ai from './ai.js';
-import { plan, freeSlots, freeTotal, todoCompare, HABIT_COLOR } from './scheduler.js';
+import { plan, freeSlots, freeTotal, todoCompare, dayBounds, logicalNow, normalizeEvents, normalizeEvent, HABIT_COLOR } from './scheduler.js';
 import { hasConstraint, describe } from './constraints.js';
 import { WD, toM, fm, dur, ymd, pd, addDays, minutesOf, label, uid } from './util.js';
 
@@ -13,7 +13,11 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const el = (tag, cls, txt) => { const x = document.createElement(tag); if (cls) x.className = cls; if (txt !== undefined) x.textContent = txt; return x; };
 
 const qs = new URLSearchParams(location.search);
-let sel = /^\d{4}-\d{2}-\d{2}$/.test(qs.get('date') || '') ? qs.get('date') : ymd(new Date());
+// 活動時間が翌日にまたがるとき、深夜0〜2時は「前日の夜」。「今日」は論理日で数える
+const logicalToday = () => logicalNow(new Date(), store.settings()).date;
+// 論理日の分（24:00 以降は「翌」）の表示用
+const clock = (m) => (m >= 1440 ? '翌' + fm(m - 1440) : fm(m));
+let sel = /^\d{4}-\d{2}-\d{2}$/.test(qs.get('date') || '') ? qs.get('date') : logicalToday();
 let tab = ['day', 'todo', 'habit', 'settings'].includes(qs.get('tab')) ? qs.get('tab') : 'day';
 let unplaced = { todos: [], habits: [] };
 const estimating = new Set();
@@ -72,19 +76,21 @@ function render() {
 
 // ---------------------------------------------------------------- 1日ビュー
 function renderDay() {
-  const now = new Date(), today = ymd(now), isToday = sel === today, s = S();
+  const now = new Date(), s = S(), ln = logicalNow(now, s), today = ln.date, isToday = sel === today;
   const sd = pd(sel);
   $('#ttl').textContent = `${sd.getMonth() + 1}月${sd.getDate()}日（${WD[sd.getDay()]}）`;
   $('#jump').value = sel;
 
   // 週ストリップ（日曜はじまり）
-  const all = events();
+  const raw = events();
+  const rawById = new Map(raw.map((e) => [e.id, e]));
+  const all = normalizeEvents(raw, s); // 論理日の予定（深夜は前日の 24:00〜）
   const w0 = addDays(sel, -sd.getDay());
   let wh = '';
   for (let i = 0; i < 7; i++) {
     const k = addDays(w0, i), d = pd(k);
     const dots = all.filter((e) => e.date === k).slice(0, 4).map((e) => `<i class="dot" style="background:${esc(e.color)}"></i>`).join('');
-    const ft = k >= today ? freeTotal(all, k, s, now) : 0;
+    const ft = k >= today ? freeTotal(raw, k, s, now) : 0;
     wh += `<button class="wk ${i == 0 ? 'sun' : i == 6 ? 'sat' : ''} ${k == today ? 'today' : ''} ${k == sel ? 'sel' : ''}" data-d="${k}">${WD[i]}<b>${d.getDate()}</b><span class="dots">${dots}</span><span class="fr">${ft ? Math.round(ft / 30) / 2 + 'h' : ''}</span></button>`;
   }
   $('#week').innerHTML = wh;
@@ -93,17 +99,17 @@ function renderDay() {
   const timed = items.filter((e) => e.start), plain = items.filter((e) => !e.start);
 
   // サマリー
-  const fr = sel < today ? [] : freeSlots(all, sel, s, now);
+  const fr = sel < today ? [] : freeSlots(raw, sel, s, now);
   const sum = $('#sum');
   sum.innerHTML = '';
   const tot = fr.reduce((a, [x, y]) => a + y - x, 0);
   const big = el('div', 'big');
   big.append(isToday ? 'この先の空き時間 ' : '空き時間 ', el('b', 0, tot ? dur(tot) : 'なし'));
   sum.append(big);
-  sum.append(el('div', 'sub', `活動時間 ${s.dayStart}–${s.dayEnd}・${s.minFree}分以上の隙間を表示`));
+  sum.append(el('div', 'sub', `活動時間 ${s.dayStart}–${s.dayEndNext ? '翌' : ''}${s.dayEnd}・${s.minFree}分以上の隙間を表示`));
   const ch = el('div', 'chips');
   fr.forEach(([a, b]) => {
-    const c = el('button', 'chip', `${fm(a)}–${fm(b)}（${dur(b - a)}）`);
+    const c = el('button', 'chip', `${clock(a)}–${clock(b)}（${dur(b - a)}）`);
     c.onclick = () => openEvent(null, a, Math.min(b, a + 60));
     ch.append(c);
   });
@@ -113,9 +119,9 @@ function renderDay() {
   if (uh.length) sum.append(el('div', 'warn', '⚠ 入りきらない習慣: ' + uh.map((x) => store.get('habit', x.id)?.title).filter(Boolean).join('、')));
 
   // タイムライン
-  const ds = toM(s.dayStart), de = toM(s.dayEnd);
+  const { ds, de } = dayBounds(s);
   const hs = Math.max(0, Math.min(Math.floor(ds / 60) - 1, ...timed.map((e) => Math.floor(toM(e.start) / 60))));
-  const he = 24;
+  const he = Math.max(24, Math.ceil(de / 60));
   const tl = $('#tl');
   tl.innerHTML = '';
   tl.style.height = (he - hs) * H + 'px';
@@ -123,12 +129,12 @@ function renderDay() {
   for (let h = hs; h < he; h++) {
     const l = el('div', 'hl');
     l.style.top = (h - hs) * H + 'px';
-    l.append(el('span', 0, h + ':00'));
+    l.append(el('span', 0, (h >= 24 ? '翌' + (h - 24) : h) + ':00'));
     tl.append(l);
   }
   // 活動時間外を薄く
   const shade = (a, b) => { if (b <= a) return; const o = el('div', 'off'); o.style.top = Y(a) + 'px'; o.style.height = ((b - a) * H) / 60 + 'px'; tl.append(o); };
-  shade(hs * 60, ds); shade(de, 24 * 60);
+  shade(hs * 60, ds); shade(de, he * 60);
   // 余白
   if (+s.bufferBefore || +s.bufferAfter) {
     timed.filter((e) => !e.auto).forEach((e) => {
@@ -155,7 +161,7 @@ function renderDay() {
     x.c = c; grp.push(x); gend = Math.max(gend, x.f);
   });
   flush();
-  const nm = minutesOf(now);
+  const nm = ln.min;
   L.forEach((x) => {
     const e = x.e, d = el('button', 'blk' + (e.auto ? ' auto' : ''));
     if (sel < today || (isToday && x.f <= nm)) d.classList.add('past');
@@ -168,7 +174,8 @@ function renderDay() {
     const t = el('div');
     if (e.auto) t.append(el('span', 'tag', e.kind === 'todo' ? (store.get('todo', e.ref)?.done ? '✓ToDo' : 'ToDo') : '習慣'));
     t.append(e.title);
-    d.append(t, el('small', 0, `${e.start}–${e.end}${e.place ? '・' + e.place : ''}${e.pinned ? '・固定' : ''}`));
+    const r = rawById.get(e.id) || e; // 表示は実際の時刻
+    d.append(t, el('small', 0, `${r.start}–${r.end}${e.place ? '・' + e.place : ''}${e.pinned ? '・固定' : ''}`));
     d.onclick = () => openEvent(e.id);
     tl.append(d);
   });
@@ -235,6 +242,12 @@ function bindConstraints(p, cur) {
 // ---------------------------------------------------------------- 予定シート
 function openEvent(id, s, e) {
   const x = id ? store.get('event', id) : null;
+  // 空き枠から追加するとき：論理日の分(24:00以降あり) → 実際の日付・時刻。24:00 をまたぐ場合は 24:00 で切る
+  let nDate = sel;
+  if (s !== undefined) {
+    if (s >= 1440) { nDate = addDays(sel, 1); s -= 1440; e = e === undefined ? undefined : e - 1440; }
+    else if (e !== undefined && e > 1440) e = 1440 - 1;
+  }
   const src = x?.auto ? store.get(x.kind, x.ref) : null;
   const head = x?.auto
     ? `<h3>${x.kind === 'todo' ? 'ToDo の作業枠' : '習慣'}：${esc(x.title)}</h3><p class="note">自動で配置された枠です。時間を変えると「固定」になり、再配置で動かなくなります。</p>`
@@ -246,7 +259,7 @@ function openEvent(id, s, e) {
     : '';
   openSheet(`<form id="form">${head}${autoActs}
     <label>タイトル</label><input type="text" id="f-title" required value="${esc(x?.title)}" placeholder="例：打ち合わせ" ${x?.auto ? 'readonly' : ''}>
-    <label>日付</label><input type="date" id="f-date" required value="${x ? x.date : sel}">
+    <label>日付</label><input type="date" id="f-date" required value="${x ? x.date : nDate}">
     <div class="row"><div><label>開始</label><input type="time" id="f-start" value="${x ? x.start : s !== undefined ? fm(s) : ''}"></div>
       <div><label>終了</label><input type="time" id="f-end" value="${x ? x.end : e !== undefined ? fm(e) : ''}"></div></div>
     ${x?.auto ? '' : `<label>場所（任意）</label><select id="f-place"><option value="">指定なし</option>${placeNames().map((n) => `<option value="${esc(n)}" ${x?.place === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
@@ -273,7 +286,7 @@ function openEvent(id, s, e) {
         const o = { title: $('#f-title', p).value.trim(), date, start: st, end: en, memo: $('#f-memo', p).value, place: $('#f-place', p).value, color: $('input[name=c]:checked', p)?.value || COLORS[0] };
         store.put('event', { id: x?.id || uid(), ...o });
       }
-      sel = date;
+      sel = normalizeEvent({ date, start: st, end: en }, S()).date; // 深夜の予定は前日の夜として表示
       closeSheet();
     };
     const del = $('#f-del', p);
@@ -498,7 +511,7 @@ async function renderSettings() {
   <div class="card group">
     <h2>活動時間</h2>
     <div class="srow"><span>開始</span><input type="time" data-k="dayStart" value="${s.dayStart}"></div>
-    <div class="srow"><span>終了</span><input type="time" data-k="dayEnd" value="${s.dayEnd}"></div>
+    <div class="srow"><span>終了${s.dayEndNext ? '（翌日）' : ''}<small>開始より前の時刻（例 02:00）にすると、翌日の深夜までになります</small></span><input type="time" data-k="dayEnd" value="${s.dayEnd}"></div>
     <div class="srow"><span>空き時間とみなす長さ<small>これ以上の隙間を「空き」として表示</small></span><input type="number" min="5" max="240" step="5" data-k="minFree" value="${s.minFree}">分</div>
   </div>
   <div class="card group">
@@ -567,12 +580,15 @@ async function renderSettings() {
     const k = inp.dataset.k;
     let v = inp.value;
     if (inp.type === 'number') v = Math.max(+inp.min || 0, Math.min(+inp.max || 999, Math.round(+v || 0)));
-    if ((k === 'dayStart' || k === 'dayEnd')) {
-      const a = k === 'dayStart' ? v : s.dayStart, b = k === 'dayEnd' ? v : s.dayEnd;
-      if (!v || toM(b) <= toM(a)) { toast('終了は開始より後にしてください'); inp.value = s[k]; return; }
+    let extra = {};
+    if (k === 'dayStart' || k === 'dayEnd') {
+      const a = k === 'dayStart' ? v : S().dayStart, b = k === 'dayEnd' ? v : S().dayEnd;
+      if (!v) { inp.value = S()[k]; return; }
+      extra = { dayEndNext: toM(b) <= toM(a) }; // 終了が開始以前なら翌日まで
+      freshNext = true;
     }
     if (k === 'todoOrder' || k === 'constrainedFirst') freshNext = true;
-    store.setSettings({ [k]: v });
+    store.setSettings({ [k]: v, ...extra });
     if (k === 'theme') applyTheme();
   }));
   box.querySelectorAll('#notify .tg').forEach((b) => (b.onclick = () => {
@@ -645,7 +661,7 @@ $('#fab').onclick = () => {
 const shift = (n) => { sel = addDays(sel, n); render(); };
 $('#prev').onclick = () => shift(-1);
 $('#next').onclick = () => shift(1);
-$('#today').onclick = () => { sel = ymd(new Date()); render(); };
+$('#today').onclick = () => { sel = logicalToday(); render(); };
 $('#jump').onchange = (e) => { if (e.target.value) { sel = e.target.value; render(); } };
 $('#week').onclick = (e) => { const b = e.target.closest('[data-d]'); if (b) { sel = b.dataset.d; render(); } };
 // 左右スワイプで日送り
@@ -666,9 +682,9 @@ store.onChange(() => {
 sync.onStatus(() => { if (tab === 'settings' && !sheetOpen) render(); });
 
 // 1分ごとに「今」を更新し、日付が変わったら配置し直す
-let lastDay = ymd(new Date());
+let lastDay = logicalToday();
 setInterval(() => {
-  const d = ymd(new Date());
+  const d = logicalToday();
   if (d !== lastDay) { if (sel === lastDay) sel = d; lastDay = d; replan(); }
   if (!sheetOpen && tab === 'day') render();
 }, 60000);

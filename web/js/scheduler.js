@@ -11,6 +11,7 @@ import { DEFAULT_PLACES, hasConstraint, isTransit, matchesKey, placeOfGap } from
 export const DEFAULT_SETTINGS = {
   dayStart: '07:00', // 活動開始
   dayEnd: '23:00', // 活動終了
+  dayEndNext: false, // true なら終了は翌日（例：07:00〜翌02:00）
   bufferBefore: 0, // ユーザー予定の前に空ける分
   bufferAfter: 0, // ユーザー予定の後に空ける分
   minFree: 30, // この分数以上の隙間を「空き時間」として表示
@@ -26,6 +27,57 @@ export const DEFAULT_SETTINGS = {
 
 export const TODO_COLOR = '#d49a1a';
 export const HABIT_COLOR = '#8b5cf6';
+
+// ---- 「論理日」：活動時間が日付をまたぐとき（例 7:00〜翌2:00）----
+// 深夜0〜2時の予定は前日の夜の続きとして扱う。内部では前日の 24:00〜26:00 として計算し、
+// 保存するときだけ実際の日付・時刻に戻す。
+
+/** 活動時間の範囲（分）。翌日終了なら de > 1440 */
+export function dayBounds(s) {
+  const ds = toM(s.dayStart);
+  let de = toM(s.dayEnd);
+  if (s.dayEndNext) de = Math.min(de + 1440, ds + 1440);
+  return { ds, de };
+}
+
+/** 「いま」が属する論理日と、その日の何分か */
+export function logicalNow(now, s) {
+  const { de } = dayBounds(s);
+  const m = minutesOf(now);
+  if (de > 1440 && m < de - 1440) return { date: addDays(ymd(now), -1), min: m + 1440 };
+  return { date: ymd(now), min: m };
+}
+
+/** 実際の予定 → 論理日の予定（何度かけても同じ結果） */
+export function normalizeEvent(e, s) {
+  const { de } = dayBounds(s);
+  if (de > 1440 && e.date && e.start && e.end && toM(e.start) < de - 1440) {
+    return { ...e, date: addDays(e.date, -1), start: fm(toM(e.start) + 1440), end: fm(toM(e.end) + 1440) };
+  }
+  return e;
+}
+export const normalizeEvents = (list, s) => list.map((e) => normalizeEvent(e, s));
+
+/** 論理日の予定 → 実際の日付・時刻 */
+export function denormalizeEvent(e) {
+  if (e.start && toM(e.start) >= 1440) {
+    return { ...e, date: addDays(e.date, 1), start: fm(toM(e.start) - 1440), end: fm(toM(e.end) - 1440) };
+  }
+  return e;
+}
+
+/** 区間を 24:00 の境目で分ける（自動配置の枠が日付をまたがないように） */
+const splitMidnight = (list) => list.flatMap(([a, b]) => (a < 1440 && b > 1440 ? [[a, 1440], [1440, b]] : [[a, b]]));
+
+/** 習慣の時間帯（分）。終了が開始以前なら翌日扱い。深夜の時間帯は活動時間の翌日側に寄せる */
+function habitWindow(h, s) {
+  const { ds, de } = dayBounds(s);
+  let f = toM(h.from || s.dayStart);
+  let t = h.to ? toM(h.to) : de;
+  if (h.to && t <= f) t += 1440;
+  if (de > 1440 && f < ds && f + 1440 < de) { f += 1440; t += 1440; }
+  return [Math.max(ds, f), Math.min(de, t)];
+}
 
 const timed = (e) => !e.deleted && e.start && e.end;
 
@@ -81,16 +133,19 @@ export function todoCompare(s) {
 
 /** その日の探索下限（今日なら現在時刻以降） */
 function lowerBound(date, s, now) {
-  const ds = toM(s.dayStart);
-  if (now && date === ymd(now)) return Math.max(ds, roundUp(minutesOf(now), 5));
+  const { ds } = dayBounds(s);
+  if (now) {
+    const ln = logicalNow(now, s);
+    if (date === ln.date) return Math.max(ds, roundUp(ln.min, 5));
+  }
   return ds;
 }
 
 /** 表示用：minFree 分以上の空き時間 */
 export function freeSlots(events, date, s, now) {
-  const lo = lowerBound(date, s, now), hi = toM(s.dayEnd);
-  if (now && date < ymd(now)) return [];
-  return gaps(busyIntervals(events, date, s), lo, hi).filter(([a, b]) => b - a >= (+s.minFree || 30));
+  const lo = lowerBound(date, s, now), hi = dayBounds(s).de;
+  if (now && date < logicalNow(now, s).date) return [];
+  return gaps(busyIntervals(normalizeEvents(events, s), date, s), lo, hi).filter(([a, b]) => b - a >= (+s.minFree || 30));
 }
 
 /**
@@ -100,7 +155,7 @@ export function freeSlots(events, date, s, now) {
  */
 function candidatesFor(item, date, poolArr, lo, hi, s) {
   const free = gaps(busyIntervals(poolArr, date, s), lo, hi);
-  if (!hasConstraint(item)) return free;
+  if (!hasConstraint(item)) return splitMidnight(free);
   const day = poolArr.filter((e) => !e.deleted && e.date === date && e.start && e.end);
   const users = day.filter((e) => !e.auto).sort((a, b) => toM(a.start) - toM(b.start));
   const placedEv = users.filter((e) => e.place);
@@ -124,7 +179,7 @@ function candidatesFor(item, date, poolArr, lo, hi, s) {
       out = out.map(([a, b]) => [Math.max(a, lo2), b]).filter(([a, b]) => b > a);
     }
   }
-  return out;
+  return splitMidnight(out);
 }
 
 const sameAuto = (a, b) =>
@@ -143,14 +198,14 @@ const sameAuto = (a, b) =>
  */
 export function plan({ events, todos, habits, settings }, now = new Date(), { fresh = false } = {}) {
   const s = { ...DEFAULT_SETTINGS, ...settings };
-  const today = ymd(now), nowMin = minutesOf(now);
+  const { date: today, min: nowMin } = logicalNow(now, s);
   const horizon = Math.max(1, Math.min(28, +s.horizon || 7));
   const days = Array.from({ length: horizon }, (_, i) => addDays(today, i));
   const lastDay = days[days.length - 1];
-  const ds = toM(s.dayStart), de = toM(s.dayEnd);
+  const { ds, de } = dayBounds(s);
   const minChunk = Math.max(5, +s.minChunk || 30);
 
-  const live = events.filter((e) => !e.deleted);
+  const live = normalizeEvents(events, s).filter((e) => !e.deleted);
   const todoMap = new Map(todos.filter((t) => !t.deleted).map((t) => [t.id, t]));
   const habitMap = new Map(habits.filter((h) => !h.deleted).map((h) => [h.id, h]));
 
@@ -186,7 +241,7 @@ export function plan({ events, todos, habits, settings }, now = new Date(), { fr
     if (a.date > lastDay) { removes.push(a.id); continue; }
     if (a.kind === 'habit') {
       const ok = (src.days || []).includes(pd(a.date).getDay()) && !(src.skip || []).includes(a.date) &&
-        toM(a.start) >= toM(src.from || s.dayStart) && toM(a.end) <= toM(src.to || s.dayEnd) &&
+        toM(a.start) >= habitWindow(src, s)[0] && toM(a.end) <= habitWindow(src, s)[1] &&
         toM(a.end) - toM(a.start) === (+src.minutes || 30) &&
         fitsDay(a) && okBlock(a, src, [...fixed, ...keep]) &&
         !keep.some((k) => k.kind === 'habit' && k.ref === a.ref && k.date === a.date);
@@ -236,7 +291,7 @@ export function plan({ events, todos, habits, settings }, now = new Date(), { fr
       if (!(h.days || []).includes(wd) || (h.skip || []).includes(d)) continue;
       if (keep.some((k) => k.kind === 'habit' && k.ref === h.id && k.date === d)) continue;
       const m = +h.minutes || 30;
-      const lo = Math.max(ds, toM(h.from || s.dayStart)), hi = Math.min(de, toM(h.to || s.dayEnd));
+      const [lo, hi] = habitWindow(h, s);
       const g = cand(h, d, lo, hi).find(([a, b]) => b - a >= m);
       if (!g) {
         // 今日のもう過ぎた時間帯は「未配置」扱いにしない
@@ -287,7 +342,8 @@ export function plan({ events, todos, habits, settings }, now = new Date(), { fr
   const current = new Map(events.map((e) => [e.id, e]));
   const removeSet = new Set(removes);
   const upserts = [];
-  for (const p of placed) {
+  for (const p0 of placed) {
+    const p = denormalizeEvent(p0); // 保存用に実際の日付・時刻へ
     removeSet.delete(p.id);
     const c = current.get(p.id);
     if (!c || c.deleted || !sameAuto(c, p)) upserts.push(p);

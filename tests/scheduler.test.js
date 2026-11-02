@@ -218,3 +218,56 @@ test('fresh: 固定した枠と開始済みの枠は動かさない', () => {
   assert.deepEqual(r.removes, []);
   assert.equal(r.upserts.length, 1); // 残り60分ぶんだけ新しく置く
 });
+
+// ---- 活動時間が翌日にまたがる（7:00〜翌2:00）----
+import { freeSlots as fs2, logicalNow, normalizeEvent, denormalizeEvent } from '../web/js/scheduler.js';
+const NIGHT = { ...S, dayStart: '07:00', dayEnd: '02:00', dayEndNext: true, horizon: 2 };
+
+test('深夜: 空き時間は 24:00 を越えて翌2:00まで続く', () => {
+  const f = fs2([], '2026-11-02', NIGHT, new Date(2026, 10, 1, 12, 0));
+  assert.deepEqual(f, [[7 * 60, 26 * 60]]);
+});
+
+test('深夜: 翌日0〜2時の予定は前日の夜の続きとして空きを減らす', () => {
+  const events = [ev('late', '2026-11-03', '00:30', '01:30')]; // 11/3 の 0:30 = 11/2 の夜
+  const f = fs2(events, '2026-11-02', NIGHT, new Date(2026, 10, 1, 12, 0));
+  assert.deepEqual(f, [[7 * 60, 24 * 60 + 30], [25 * 60 + 30, 26 * 60]]);
+  // 11/3 の昼側には影響しない
+  assert.deepEqual(fs2(events, '2026-11-03', NIGHT, new Date(2026, 10, 1, 12, 0)), [[7 * 60, 26 * 60]]);
+});
+
+test('深夜: 午前1時は前日の論理日（now）', () => {
+  assert.deepEqual(logicalNow(new Date(2026, 10, 3, 1, 0), NIGHT), { date: '2026-11-02', min: 25 * 60 });
+  assert.deepEqual(logicalNow(new Date(2026, 10, 3, 3, 0), NIGHT), { date: '2026-11-03', min: 3 * 60 });
+});
+
+test('深夜: normalize/denormalize は往復で元に戻る', () => {
+  const e = ev('x', '2026-11-03', '00:30', '01:00');
+  const n = normalizeEvent(e, NIGHT);
+  assert.deepEqual([n.date, n.start, n.end], ['2026-11-02', '24:30', '25:00']);
+  assert.deepEqual(normalizeEvent(n, NIGHT), n); // 何度かけても同じ
+  const back = denormalizeEvent(n);
+  assert.deepEqual([back.date, back.start, back.end], ['2026-11-03', '00:30', '01:00']);
+});
+
+test('深夜: ToDo は 24:00 をまたがず、翌日の日付・時刻で保存される。再計算しても変わらない', () => {
+  // 7:00〜23:00 は予定で埋めて、夜〜深夜だけ空ける
+  const events = [ev('day', '2026-11-02', '07:00', '23:00')];
+  const todos = [{ id: 'a', title: 'A', minutes: 180 }];
+  const now = new Date(2026, 10, 2, 6, 0);
+  const r = plan({ events, todos, habits: [], settings: { ...NIGHT, horizon: 1 } }, now);
+  assert.ok(r.upserts.every((e) => toMin(e.end) > toMin(e.start)), '日付をまたぐ枠がある');
+  const dates = r.upserts.map((e) => e.date).sort();
+  assert.deepEqual(dates, ['2026-11-02', '2026-11-03']);
+  const r2 = plan({ events: [...events, ...r.upserts], todos, habits: [], settings: { ...NIGHT, horizon: 1 } }, now);
+  assert.deepEqual(r2.upserts, []);
+  assert.deepEqual(r2.removes, []);
+});
+const toMin = (t) => { const [a, b] = t.split(':').map(Number); return a * 60 + b; };
+
+test('深夜: 習慣を 0:00〜2:00 の時間帯に置ける（前日の夜扱い）', () => {
+  const habits = [{ id: 'h', title: '夜ふかし読書', days: [1], from: '00:00', to: '02:00', minutes: 30 }];
+  const r = plan({ events: [], todos: [], habits, settings: { ...NIGHT, horizon: 1 } }, new Date(2026, 10, 2, 6, 0));
+  // 月曜(11/2)の夜 = 11/3 0:00
+  assert.deepEqual(r.upserts.map((e) => `${e.date} ${e.start}`), ['2026-11-03 00:00']);
+});
