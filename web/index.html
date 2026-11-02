@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>マイスケジュール</title>
+<meta name="description" content="空き時間にToDoと習慣を自動で入れる個人用スケジュール">
+<meta name="theme-color" content="#f6f5f1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#16181c" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="スケジュール">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="styles.css">
+<script type="module" src="js/app.js"></script>
+</head>
+<body>
+<main>
+  <section id="v-day" class="view">
+    <header class="top">
+      <h1><span id="ttl"></span> <span class="caret">▾</span><input type="date" id="jump" aria-label="日付を選ぶ"></h1>
+      <div class="nav"><button id="prev" aria-label="前の日">‹</button><button id="today">今日</button><button id="next" aria-label="次の日">›</button></div>
+    </header>
+    <div class="week" id="week"></div>
+    <div class="card sum" id="sum"></div>
+    <div class="card tlw"><div id="tl"></div></div>
+  </section>
+
+  <section id="v-todo" class="view" hidden>
+    <header class="top"><h1>ToDo</h1><button class="ghost" id="replan">↻ 再配置</button></header>
+    <form class="card addrow" id="todo-add">
+      <input type="text" id="todo-in" placeholder="やること（例：企画書を書く）" autocomplete="off" enterkeyhint="done">
+      <button class="pri" type="submit">追加</button>
+    </form>
+    <p class="hint" id="todo-hint"></p>
+    <div id="todo-list"></div>
+  </section>
+
+  <section id="v-habit" class="view" hidden>
+    <header class="top"><h1>習慣</h1></header>
+    <p class="hint">曜日と時間帯を決めておくと、その範囲の空きに毎週自動で入ります。</p>
+    <div id="habit-list"></div>
+  </section>
+
+  <section id="v-settings" class="view" hidden>
+    <header class="top"><h1>設定</h1></header>
+    <div id="settings"></div>
+  </section>
+</main>
+
+<button class="fab" id="fab" aria-label="追加">+</button>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="day" class="on"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>予定</button>
+  <button data-tab="todo"><svg viewBox="0 0 24 24"><path d="M4 7l2 2 4-4M4 16l2 2 4-4M13 7h7M13 16h7"/></svg>ToDo</button>
+  <button data-tab="habit"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/></svg>習慣</button>
+  <button data-tab="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></svg>設定</button>
+</nav>
+
+<div class="sheet" id="sheet"><div class="panel" id="panel" role="dialog" aria-modal="true"></div></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

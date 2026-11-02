@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>マイスケジュール</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#f6f5f1;--card:#fff;--tx:#1f2328;--sub:#6b7280;--line:#e5e3dc;--ac:#2f6fed;--sun:#d9453d;--sat:#2f6fed;--free:#2e9e6b}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#16181c;--card:#1f2227;--tx:#eceef1;--sub:#9aa1ab;--line:#2d3138;--ac:#6b9bff;--sun:#ff7a72;--sat:#6b9bff;--free:#4cc78e}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#16181c;--card:#1f2227;--tx:#eceef1;--sub:#9aa1ab;--line:#2d3138;--ac:#6b9bff;--sun:#ff7a72;--sat:#6b9bff;--free:#4cc78e}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--tx);font:16px/1.5 -apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;max-width:560px;margin:0 auto;padding:12px 12px 96px}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+header{display:flex;align-items:center;justify-content:space-between;margin:4px 0 10px}
+h1{font-size:19px;margin:0;position:relative}
+h1 input{position:absolute;inset:0;opacity:0;width:100%;height:100%}
+.nav button{padding:6px 12px;border-radius:8px;background:var(--card);border:1px solid var(--line)}
+.week{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:6px}
+.wk{display:flex;flex-direction:column;align-items:center;padding:4px 0 6px;border-radius:10px;font-size:12px;color:var(--sub)}
+.wk b{font-size:16px;color:var(--tx);font-weight:600;width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:50%}
+.wk.sun b{color:var(--sun)}.wk.sat b{color:var(--sat)}
+.wk.today b{outline:1.5px solid var(--ac)}
+.wk.sel{background:var(--ac)}.wk.sel,.wk.sel b{color:#fff}
+.dots{display:flex;gap:2px;height:5px;margin-top:2px}
+.dot{width:5px;height:5px;border-radius:50%}
+.sum{margin-top:12px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px}
+.sum .big{font-size:15px}.sum .big b{color:var(--free);font-size:20px}
+.ai{margin-top:12px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:10px}
+.ai .r{display:flex;gap:8px}.ai input{flex:1;min-width:0;font:inherit;color:var(--tx);background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px}
+.ai .go{padding:0 14px;border-radius:10px;background:var(--ac);color:#fff;white-space:nowrap}
+.res{margin-top:10px;font-size:14px}.res .h{font-weight:600;font-size:15px}.res .why{color:var(--sub);margin:4px 0 8px}
+.res .pick{display:block;width:100%;padding:10px;border-radius:10px;background:var(--free);color:#fff;font-weight:600}
+.res .alt{margin-top:8px;font-size:12px;color:var(--sub)}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chip{font-size:13px;padding:4px 10px;border-radius:999px;border:1px dashed var(--free);color:var(--free)}
+.ad{font-size:13px;padding:3px 10px;border-radius:999px;background:var(--card);border:1px solid var(--line)}
+.tlw{margin-top:12px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:8px 8px 8px 0}
+#tl{position:relative;margin-left:46px}
+.hl{position:absolute;left:0;right:0;border-top:1px solid var(--line)}
+.hl span{position:absolute;left:-44px;top:-9px;width:38px;text-align:right;font-size:11px;color:var(--sub)}
+.blk{position:absolute;border-radius:8px;padding:2px 6px;overflow:hidden;font-size:13px;line-height:1.3;text-align:left;border-left:4px solid;z-index:2}
+.blk small{display:block;font-size:11px;color:var(--sub)}
+.free{position:absolute;left:2px;right:2px;border:1.5px dashed var(--free);background:color-mix(in srgb,var(--free) 12%,transparent);border-radius:8px;color:var(--free);font-size:12px;padding:2px 8px;z-index:1;text-align:left}
+.now{position:absolute;left:-6px;right:0;border-top:2px solid var(--sun);z-index:3}
+.now::before{content:"";position:absolute;left:0;top:-5px;width:8px;height:8px;border-radius:50%;background:var(--sun)}
+.fab{position:fixed;right:max(18px,calc(50% - 262px));bottom:calc(20px + env(safe-area-inset-bottom,0px));width:56px;height:56px;border-radius:50%;background:var(--ac);color:#fff;font-size:30px;box-shadow:0 4px 14px rgba(0,0,0,.25);z-index:4}
+.sheet{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:flex-end;justify-content:center;z-index:9}
+.sheet.on{display:flex}
+form{background:var(--card);width:100%;max-width:560px;border-radius:18px 18px 0 0;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px))}
+label{display:block;font-size:12px;color:var(--sub);margin:10px 0 4px}
+input[type=text],input[type=date],input[type=time],textarea{width:100%;font:inherit;color:var(--tx);background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px}
+.row{display:flex;gap:8px}.row>div{flex:1;min-width:0}
+.cols{display:flex;gap:10px;margin-top:4px}
+.cols label{margin:0;cursor:pointer}
+.cols input{display:none}
+.cols span{display:block;width:30px;height:30px;border-radius:50%;border:3px solid transparent}
+.cols input:checked+span{border-color:var(--tx)}
+.acts{display:flex;gap:8px;margin-top:16px}
+.acts button{flex:1;padding:12px;border-radius:10px;border:1px solid var(--line)}
+.acts .pri{background:var(--ac);color:#fff;border-color:var(--ac)}
+.acts .del{color:var(--sun)}
+</style>
+</head>
+<body>
+<header>
+  <h1><span id="ttl"></span> ▾<input type="date" id="jump"></h1>
+  <div class="nav"><button id="prev">‹</button> <button id="today">今日</button> <button id="next">›</button></div>
+</header>
+<div class="week" id="week"></div>
+<div class="ai"><div class="r"><input type="text" id="ai-in" placeholder="✨ やりたいこと（例：英語の勉強、部屋の掃除）"><button class="go" id="ai-go">提案</button></div><div class="res" id="ai-out"></div></div>
+<div class="sum" id="sum"></div>
+<div class="tlw"><div id="tl"></div></div>
+<button class="fab" id="add" aria-label="予定を追加">+</button>
+
+<div class="sheet" id="sheet">
+<form id="form">
+  <label>タイトル</label><input type="text" id="f-title" placeholder="例：打ち合わせ" required>
+  <div class="row"><div><label>日付</label><input type="date" id="f-date" required></div></div>
+  <div class="row">
+    <div><label>開始</label><input type="time" id="f-start"></div>
+    <div><label>終了</label><input type="time" id="f-end"></div>
+  </div>
+  <label>メモ（時間を空欄にすると「時間なし」の予定になります）</label><textarea id="f-memo" rows="2"></textarea>
+  <label>色</label><div class="cols" id="cols"></div>
+  <div class="acts">
+    <button type="button" class="del" id="f-del">削除</button>
+    <button type="button" id="f-cancel">キャンセル</button>
+    <button type="submit" class="pri">保存</button>
+  </div>
+</form>
+</div>
+
+<script>
+const KEY='my-schedule-v1',COLORS=['#2f6fed','#e0573d','#2e9e6b','#d49a1a','#8b5cf6'];
+const DS=7*60,DE=23*60,MINFREE=30,H=52; // 活動時間 7:00–23:00、30分以上を「空き」とする
+const $=s=>document.querySelector(s),WD=['日','月','火','水','木','金','土'];
+const toM=t=>{const[a,b]=t.split(':').map(Number);return a*60+b};
+const fm=m=>String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');
+const dur=m=>m<60?m+'分':Math.floor(m/60)+'時間'+(m%60?m%60+'分':'');
+const ymd=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const pd=s=>{const[y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d)};
+const nowM=()=>{const n=new Date();return n.getHours()*60+n.getMinutes()};
+let ev=[];try{ev=JSON.parse(localStorage.getItem(KEY)||'[]')}catch(e){}
+ev.forEach(e=>{if(e.start===undefined){e.start=e.time||'';e.end=e.time?fm(Math.min(1439,toM(e.time)+60)):'';delete e.time}});
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(ev))}catch(e){}};
+let sel=ymd(new Date()),editId=null;
+$('#cols').innerHTML=COLORS.map((c,i)=>`<label><input type="radio" name="c" value="${c}" ${i?'':'checked'}><span style="background:${c}"></span></label>`).join('');
+
+function frees(items,isToday){
+  let t=DS;if(isToday)t=Math.max(DS,Math.ceil(nowM()/5)*5);
+  const busy=items.filter(e=>e.start).map(e=>[toM(e.start),toM(e.end)]).sort((a,b)=>a[0]-b[0]),out=[];
+  for(const[s,e]of busy){const s2=Math.min(s,DE);if(s2-t>=MINFREE)out.push([t,s2]);t=Math.max(t,e);if(t>=DE)break}
+  if(DE-t>=MINFREE)out.push([t,DE]);
+  return out;
+}
+const el=(tag,cls,txt)=>{const x=document.createElement(tag);if(cls)x.className=cls;if(txt!==undefined)x.textContent=txt;return x};
+
+function render(){
+  const sd=pd(sel),today=ymd(new Date()),isToday=sel===today;
+  $('#ttl').textContent=`${sd.getFullYear()}年${sd.getMonth()+1}月${sd.getDate()}日（${WD[sd.getDay()]}）`;
+  $('#jump').value=sel;
+  // 週ストリップ
+  const w0=new Date(sd);w0.setDate(sd.getDate()-sd.getDay());let wh='';
+  for(let i=0;i<7;i++){const d=new Date(w0);d.setDate(w0.getDate()+i);const k=ymd(d);
+    const dots=ev.filter(e=>e.date===k).slice(0,4).map(e=>`<i class="dot" style="background:${e.color}"></i>`).join('');
+    wh+=`<button class="wk ${i==0?'sun':i==6?'sat':''} ${k==today?'today':''} ${k==sel?'sel':''}" data-d="${k}">${WD[i]}<b>${d.getDate()}</b><span class="dots">${dots}</span></button>`}
+  $('#week').innerHTML=wh;
+  const items=ev.filter(e=>e.date===sel).sort((a,b)=>(a.start||'').localeCompare(b.start||''));
+  const timed=items.filter(e=>e.start),plain=items.filter(e=>!e.start);
+  // 空き時間サマリー
+  const fr=frees(items,isToday),sum=$('#sum');sum.innerHTML='';
+  const tot=fr.reduce((a,[s,e])=>a+e-s,0),big=el('div','big');
+  big.append(isToday?'この先の空き時間 ':'空き時間 ');const b=el('b',0,tot?dur(tot):'なし');big.append(b);
+  big.append(`（${fm(DS)}–${fm(DE)}）`);sum.append(big);
+  const ch=el('div','chips');
+  fr.forEach(([s,e])=>{const c=el('button','chip',`${fm(s)}–${fm(e)}（${dur(e-s)}）`);c.onclick=()=>open(null,s,Math.min(e,s+60));ch.append(c)});
+  plain.forEach(e=>{const c=el('button','ad',e.title);c.onclick=()=>open(e.id);ch.append(c)});
+  if(ch.children.length)sum.append(ch);
+  // タイムライン
+  const hs=Math.min(6,...timed.map(e=>Math.floor(toM(e.start)/60))),he=24,tl=$('#tl');
+  tl.innerHTML='';tl.style.height=(he-hs)*H+'px';
+  const Y=m=>(m-hs*60)*H/60;
+  for(let h=hs;h<he;h++){const l=el('div','hl');l.style.top=(h-hs)*H+'px';l.append(el('span',0,h+':00'));tl.append(l)}
+  fr.forEach(([s,e])=>{const f=el('button','free','空き '+dur(e-s));f.style.top=Y(s)+'px';f.style.height=Math.max(20,(e-s)*H/60)+'px';f.onclick=()=>open(null,s,Math.min(e,s+60));tl.append(f)});
+  // 重なりレイアウト
+  const L=timed.map(e=>({e,s:toM(e.start),f:toM(e.end),c:0,n:1}));let grp=[],gend=0;
+  const flush=()=>{const n=Math.max(0,...grp.map(x=>x.c))+1;grp.forEach(x=>x.n=n);grp=[]};
+  L.forEach(x=>{if(grp.length&&x.s>=gend)flush();const used=grp.filter(y=>y.f>x.s).map(y=>y.c);let c=0;while(used.includes(c))c++;x.c=c;grp.push(x);gend=Math.max(gend,x.f)});flush();
+  L.forEach(x=>{const e=x.e,d=el('button','blk');d.style.top=Y(x.s)+'px';d.style.height=Math.max(22,(x.f-x.s)*H/60-2)+'px';
+    d.style.left=`calc(${x.c*100/x.n}% + 2px)`;d.style.width=`calc(${100/x.n}% - 4px)`;d.style.background=e.color+'30';d.style.borderColor=e.color;
+    d.append(el('div',0,e.title),el('small',0,`${e.start}–${e.end}`));d.onclick=()=>open(e.id);tl.append(d)});
+  if(isToday){const n=nowM();if(n>=hs*60){const l=el('div','now');l.style.top=Y(n)+'px';tl.append(l)}}
+}
+
+function open(id,s,e){
+  editId=id;const x=ev.find(v=>v.id===id);
+  $('#f-title').value=x?x.title:'';$('#f-date').value=x?x.date:sel;
+  $('#f-start').value=x?x.start:(s!==undefined?fm(s):'');$('#f-end').value=x?x.end:(e!==undefined?fm(e):'');
+  $('#f-memo').value=x?x.memo:'';const c=x?x.color:COLORS[0];
+  document.querySelectorAll('#cols input').forEach(i=>i.checked=i.value===c);
+  $('#f-del').style.display=x?'':'none';$('#sheet').classList.add('on');
+}
+const close=()=>$('#sheet').classList.remove('on');
+$('#form').onsubmit=e=>{
+  e.preventDefault();let st=$('#f-start').value,en=$('#f-end').value;
+  if(st&&!en)en=fm(Math.min(1439,toM(st)+60));if(!st)en='';
+  if(st&&toM(en)<=toM(st)){alert('終了は開始より後にしてください');return}
+  const o={title:$('#f-title').value.trim(),date:$('#f-date').value,start:st,end:en,memo:$('#f-memo').value,color:document.querySelector('#cols input:checked').value};
+  if(editId)Object.assign(ev.find(v=>v.id===editId),o);else ev.push({id:Date.now().toString(36),...o});
+  save();sel=o.date;close();render();
+};
+$('#f-del').onclick=()=>{if(confirm('この予定を削除しますか？')){ev=ev.filter(v=>v.id!==editId);save();close();render()}};
+$('#f-cancel').onclick=close;
+$('#sheet').onclick=e=>{if(e.target.id==='sheet')close()};
+$('#add').onclick=()=>open(null);
+const shift=n=>{const d=pd(sel);d.setDate(d.getDate()+n);sel=ymd(d);render()};
+$('#prev').onclick=()=>shift(-1);$('#next').onclick=()=>shift(1);
+$('#today').onclick=()=>{sel=ymd(new Date());render()};
+$('#jump').onchange=e=>{if(e.target.value){sel=e.target.value;render()}};
+$('#week').onclick=e=>{const b=e.target.closest('[data-d]');if(b){sel=b.dataset.d;render()}};
+function addEv(title,date,s,e){ev.push({id:Date.now().toString(36),title,date,start:s,end:e,memo:'',color:COLORS[0]});save();sel=date;$('#ai-out').textContent='';$('#ai-in').value='';render()}
+const lab=k=>{const d=pd(k);return `${d.getMonth()+1}/${d.getDate()}（${WD[d.getDay()]}）`};
+async function suggest(){
+  const text=$('#ai-in').value.trim(),out=$('#ai-out');if(!text)return;
+  let sample=null;try{sample=await claude.use('sample')}catch(e){}
+  if(!sample){out.textContent='この環境ではAI提案を使えません';return}
+  const slots=[],base=pd(sel),td=ymd(new Date());
+  for(let i=0;i<7;i++){const d=new Date(base);d.setDate(base.getDate()+i);const k=ymd(d);
+    frees(ev.filter(e=>e.date===k),k===td).forEach(([s,e])=>slots.push({date:k,s,e}))}
+  if(!slots.length){out.textContent='この1週間は空きがありません';return}
+  out.textContent='考え中…';$('#ai-go').disabled=true;
+  const n=new Date(),prompt=`あなたは予定管理アシスタントです。「やりたいこと」に必要な所要時間を現実的に見積もり、空き時間から最適な枠を1つ選んでください。\nやりたいこと: ${text}\n現在: ${ymd(n)} ${fm(n.getHours()*60+n.getMinutes())}\n空き時間:\n${slots.map(x=>`${x.date} ${fm(x.s)}-${fm(x.e)}`).join('\n')}\nルール: 所要時間は5分単位。選ぶ枠は必ず上の空き時間の範囲内。集中が要る作業は日中の長めの枠、軽い用事は短い隙間に。基本は直近を優先。\nJSONのみで返す: {"title":"短い予定名","minutes":数値,"date":"YYYY-MM-DD","start":"HH:MM","end":"HH:MM","reason":"1〜2文で理由"}`;
+  try{
+    const r=await sample.json(prompt);
+    let mins=Math.max(5,Math.round(Number(r.minutes)||60)),date=r.date,s=r.start&&toM(r.start),e=s+mins;
+    const ok=slots.some(x=>x.date===date&&s>=x.s&&e<=x.e);
+    if(!ok){const x=slots.find(x=>x.e-x.s>=mins)||slots[0];date=x.date;s=x.s;e=Math.min(x.e,s+mins)}
+    const title=String(r.title||text).slice(0,40);
+    out.innerHTML='';
+    out.append(el('div','h',`「${title}」は約${dur(e-s>=mins?mins:e-s)}`),el('div','why',String(r.reason||'')));
+    const b=el('button','pick',`${lab(date)} ${fm(s)}–${fm(e)} に入れる`);b.onclick=()=>addEv(title,date,fm(s),fm(e));out.append(b);
+    const alts=slots.filter(x=>x.e-x.s>=mins&&!(x.date===date&&s>=x.s&&e<=x.e)).slice(0,3);
+    if(alts.length){const a=el('div','alt','ほかの候補：');alts.forEach(x=>{const c=el('button','chip',`${lab(x.date)} ${fm(x.s)}`);c.onclick=()=>addEv(title,x.date,fm(x.s),fm(x.s+mins));a.append(' ',c)});out.append(a)}
+  }catch(err){out.textContent=err&&err.code==='not_granted'?'AI提案の許可が必要です':'うまく提案できませんでした。もう一度試してください'}
+  $('#ai-go').disabled=false;
+}
+$('#ai-go').onclick=suggest;$('#ai-in').onkeydown=e=>{if(e.key==='Enter')suggest()};
+render();setInterval(()=>{if(!$('#sheet').classList.contains('on'))render()},60000);
+</script>
+</body>
+</html>

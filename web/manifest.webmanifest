@@ -1,0 +1,22 @@
+{
+  "name": "マイスケジュール",
+  "short_name": "スケジュール",
+  "description": "空き時間にToDoと習慣を自動で入れる個人用スケジュール",
+  "lang": "ja",
+  "start_url": "./?tab=day",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#16181c",
+  "theme_color": "#2f6fed",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ],
+  "shortcuts": [
+    { "name": "ToDo", "url": "./?tab=todo" },
+    { "name": "今日の予定", "url": "./?tab=day" }
+  ]
+}

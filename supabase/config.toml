@@ -1,0 +1,9 @@
+# supabase CLI 用の最小設定（`supabase link` 後に `supabase db push` / `functions deploy`）
+project_id = "scheduling"
+
+[functions.estimate]
+verify_jwt = true
+
+[functions.push-dispatch]
+# pg_cron から x-cron-secret ヘッダーで呼ぶため JWT 検証はしない
+verify_jwt = false
