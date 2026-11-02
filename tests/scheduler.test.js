@@ -326,3 +326,30 @@ test('移動: 空き時間・ToDo配置は移動時間を避ける。電車で�
   assert.deepEqual(r2.upserts, []);
   assert.deepEqual(r2.removes, []);
 });
+
+// ---- 時間帯を決めない習慣 ----
+test('習慣(anytime): 活動時間のどこでも。ちょうど収まる隙間を選び、大きな空きを残す', () => {
+  const s = { ...S, dayStart: '08:00', dayEnd: '20:00', horizon: 1 };
+  const now = new Date(2026, 10, 2, 6, 0);
+  // 空き: 08:00-12:00(4h) / 12:30-13:30(1h) / 14:00-20:00(6h)
+  const events = [ev('a', '2026-11-02', '12:00', '12:30'), ev('b', '2026-11-02', '13:30', '14:00')];
+  const habits = [{ id: 'h', title: '読書', days: [1], minutes: 45, anytime: true }];
+  const r = plan({ events, todos: [], habits, settings: s }, now);
+  assert.deepEqual(r.upserts.map((e) => `${e.start}-${e.end}`), ['12:30-13:15']);
+  // 冪等
+  assert.deepEqual(plan({ events: [...events, ...r.upserts], todos: [], habits, settings: s }, now).upserts, []);
+  // 時間帯を決めた習慣は従来どおり最初に入る空き
+  const w = plan({ events, todos: [], habits: [{ ...habits[0], anytime: false, from: '08:00', to: '20:00' }], settings: s }, now);
+  assert.deepEqual(w.upserts.map((e) => e.start), ['08:00']);
+});
+
+test('習慣(anytime): ToDo は習慣が残した大きな空きに入る', () => {
+  const s = { ...S, dayStart: '08:00', dayEnd: '20:00', horizon: 1 };
+  const now = new Date(2026, 10, 2, 6, 0);
+  const events = [ev('a', '2026-11-02', '12:00', '12:30'), ev('b', '2026-11-02', '13:30', '14:00')];
+  const habits = [{ id: 'h', title: '読書', days: [1], minutes: 45, anytime: true }];
+  const todos = [{ id: 't', title: 'T', minutes: 180 }];
+  const r = plan({ events, todos, habits, settings: s }, now);
+  assert.deepEqual(r.upserts.filter((e) => e.ref === 't').map((e) => e.start), ['08:00']);
+  assert.deepEqual(r.unplaced.todos, []);
+});

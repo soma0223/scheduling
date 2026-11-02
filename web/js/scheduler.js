@@ -74,6 +74,7 @@ const splitMidnight = (list) => list.flatMap(([a, b]) => (a < 1440 && b > 1440 ?
 /** 習慣の時間帯（分）。終了が開始以前なら翌日扱い。深夜の時間帯は活動時間の翌日側に寄せる */
 function habitWindow(h, s) {
   const { ds, de } = dayBounds(s);
+  if (h.anytime) return [ds, de]; // 時間帯を指定しない＝その日の活動時間のどこでも
   let f = toM(h.from || s.dayStart);
   let t = h.to ? toM(h.to) : de;
   if (h.to && t <= f) t += 1440;
@@ -296,7 +297,9 @@ export function plan({ events, todos, habits, settings }, now = new Date(), { fr
       if (keep.some((k) => k.kind === 'habit' && k.ref === h.id && k.date === d)) continue;
       const m = +h.minutes || 30;
       const [lo, hi] = habitWindow(h, s);
-      const g = cand(h, d, lo, hi).find(([a, b]) => b - a >= m);
+      const fits = cand(h, d, lo, hi).filter(([a, b]) => b - a >= m);
+      // 時間帯を決めていない習慣は、ちょうど収まる隙間に入れる（大きな空きはほかの ToDo のために残す）
+      const g = h.anytime ? fits.sort((x, y) => (x[1] - x[0]) - (y[1] - y[0]) || x[0] - y[0])[0] : fits[0];
       if (!g) {
         // 今日のもう過ぎた時間帯は「未配置」扱いにしない
         if (!(d === today && lowerBound(d, s, now) + m > hi)) unplaced.habits.push({ id: h.id, date: d });

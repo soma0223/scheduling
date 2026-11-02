@@ -438,7 +438,7 @@ function openTodo(id) {
       <div><label>期限</label><input type="date" id="t-due" value="${esc(t.due)}"></div>
     </div>
     ${t.estReason ? `<p class="note">${t.estSource === 'ai' ? '✨ AI' : '目安'}：${esc(t.estReason)}</p>` : ''}
-    <button type="button" class="ghost" id="t-ai" style="margin-top:6px">✨ 所要時間を見積もり直す</button>
+    <div class="row" style="margin-top:6px;flex-wrap:wrap"><button type="button" class="ghost" id="t-ai">✨ 所要時間を見積もり直す</button><button type="button" class="ghost" id="t-habit">🔁 習慣にする</button></div>
     <label>優先度</label><div class="toggles" id="t-pri">${[3, 2, 1].map((p) => `<button type="button" class="tg ${(+t.priority || 2) === p ? 'on' : ''}" data-p="${p}">${PRI[p]}</button>`).join('')}</div>
     ${constraintFields(t)}
     <label>メモ</label><textarea id="t-memo" rows="2">${esc(t.memo)}</textarea>
@@ -449,6 +449,11 @@ function openTodo(id) {
     let pri = +t.priority || 2;
     p.querySelectorAll('#t-pri .tg').forEach((b) => (b.onclick = () => { pri = +b.dataset.p; p.querySelectorAll('#t-pri .tg').forEach((x) => x.classList.toggle('on', x === b)); }));
     $('#t-cancel', p).onclick = closeSheet;
+    $('#t-habit', p).onclick = () => {
+      const c = getC(), minutes = Math.max(5, Math.round((+$('#t-min', p).value || +t.minutes || 30) / 5) * 5);
+      closeSheet();
+      openHabit(null, { title: $('#t-title', p).value.trim() || t.title, minutes, places: c.places, after: c.after, color: HABIT_COLOR }, t.id);
+    };
     $('#t-del', p).onclick = () => { if (confirm('この ToDo を削除しますか？')) { store.remove('todo', id); closeSheet(); } };
     $('#t-ai', p).onclick = () => { closeSheet(); estimateTodos([{ ...t, title: $('#t-title', p).value.trim() || t.title }]); };
     $('#form', p).onsubmit = (e) => {
@@ -477,7 +482,7 @@ function renderHabits() {
     const m = el('div', 'm');
     const days = (h.days || []).slice().sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7));
     m.append(el('span', 0, days.length === 7 ? '毎日' : days.length ? days.map((d) => WD[d]).join('・') : '曜日なし'));
-    m.append(el('span', 0, `${h.from}–${h.to} の間に ${dur(+h.minutes || 30)}`));
+    m.append(el('span', 0, h.anytime ? `${dur(+h.minutes || 30)}をその日のどこかに` : `${h.from}–${h.to} の間に ${dur(+h.minutes || 30)}`));
     const next = events().filter((e) => e.auto && e.kind === 'habit' && e.ref === h.id && e.date >= today).sort((a, c) => (a.date + a.start).localeCompare(c.date + c.start))[0];
     if (next) m.append(el('span', 'ok', `次回 ${label(next.date)} ${next.start}`));
     if (hasConstraint(h)) m.append(el('span', 'pill', describe(h)));
@@ -491,31 +496,41 @@ function renderHabits() {
   wrap.append(l);
 }
 
-function openHabit(id) {
+/** 習慣の追加・編集。prefill は ToDo から習慣にするときの初期値、fromTodo は保存後に消す元の ToDo */
+function openHabit(id, prefill, fromTodo) {
   const h = id ? store.get('habit', id) : null;
-  const cur = h || { title: '', days: [1, 2, 3, 4, 5], from: '06:00', to: '09:00', minutes: 30, color: HABIT_COLOR };
+  const cur = h || { title: '', days: [0, 1, 2, 3, 4, 5, 6], from: '06:00', to: '09:00', minutes: 30, color: HABIT_COLOR, anytime: true, ...(prefill || {}) };
   const order = [1, 2, 3, 4, 5, 6, 0];
-  openSheet(`<form id="form"><h3>${h ? '習慣を編集' : '習慣を追加'}</h3>
+  openSheet(`<form id="form"><h3>${h ? '習慣を編集' : fromTodo ? 'ToDo を習慣にする' : '習慣を追加'}</h3>
     <label>タイトル</label><input type="text" id="h-title" required value="${esc(cur.title)}" placeholder="例：ランニング">
     <label>曜日</label><div class="toggles" id="h-days">${order.map((d) => `<button type="button" class="tg ${cur.days.includes(d) ? 'on' : ''}" data-d="${d}">${WD[d]}</button>`).join('')}</div>
-    <label>この時間帯のどこかで</label>
-    <div class="row"><div><input type="time" id="h-from" value="${cur.from}" required></div><div><input type="time" id="h-to" value="${cur.to}" required></div></div>
+    <label>時間帯</label>
+    <div class="toggles" id="h-any"><button type="button" class="tg ${cur.anytime ? 'on' : ''}" data-v="1">指定しない（その日のどこか）</button><button type="button" class="tg ${cur.anytime ? '' : 'on'}" data-v="0">時間帯を決める</button></div>
+    <div class="row" id="h-win" ${cur.anytime ? 'hidden' : ''} style="margin-top:8px"><div><input type="time" id="h-from" value="${cur.from}"></div><div><input type="time" id="h-to" value="${cur.to}"></div></div>
+    <p class="note" id="h-anynote" ${cur.anytime ? '' : 'hidden'}>毎日同じ時間にはなりません。その日の空きのどこかに、ちょうど収まる隙間を選んで入れます。</p>
     <label>所要時間（分）</label><input type="number" id="h-min" min="5" max="600" step="5" value="${+cur.minutes || 30}" required>
     ${constraintFields(cur)}
     <label>色</label>${colorPicker(cur.color, [HABIT_COLOR, cur.color])}
     <div class="acts">${h ? '<button type="button" class="del" id="h-del">削除</button>' : ''}<button type="button" id="h-cancel">閉じる</button><button type="submit" class="pri">保存</button></div>
   </form>`, (p) => {
     const getC = bindConstraints(p, cur);
+    let anytime = !!cur.anytime;
+    p.querySelectorAll('#h-any .tg').forEach((b) => (b.onclick = () => {
+      anytime = b.dataset.v === '1';
+      p.querySelectorAll('#h-any .tg').forEach((x) => x.classList.toggle('on', x === b));
+      $('#h-win', p).hidden = anytime; $('#h-anynote', p).hidden = !anytime;
+    }));
     const days = new Set(cur.days);
     p.querySelectorAll('#h-days .tg').forEach((b) => (b.onclick = () => { const d = +b.dataset.d; days.has(d) ? days.delete(d) : days.add(d); b.classList.toggle('on', days.has(d)); }));
     $('#h-cancel', p).onclick = closeSheet;
     if (h) $('#h-del', p).onclick = () => { if (confirm('この習慣を削除しますか？（今後の枠も消えます）')) { store.remove('habit', id); closeSheet(); } };
     $('#form', p).onsubmit = (e) => {
       e.preventDefault();
-      const from = $('#h-from', p).value, to = $('#h-to', p).value, minutes = +$('#h-min', p).value;
-      if (toM(to) - toM(from) < minutes) return toast('時間帯が所要時間より短いです');
+      const from = $('#h-from', p).value || '06:00', to = $('#h-to', p).value || '09:00', minutes = +$('#h-min', p).value;
+      if (!anytime && toM(to) - toM(from) < minutes) return toast('時間帯が所要時間より短いです');
       if (!days.size) return toast('曜日を1つ以上選んでください');
-      store.put('habit', { ...(h || { id: uid(), skip: [] }), title: $('#h-title', p).value.trim(), days: [...days], from, to, minutes, ...getC(), color: $('input[name=c]:checked', p)?.value || HABIT_COLOR });
+      store.put('habit', { ...(h || { id: uid(), skip: [] }), title: $('#h-title', p).value.trim(), days: [...days], from, to, anytime, minutes, ...getC(), color: $('input[name=c]:checked', p)?.value || HABIT_COLOR });
+      if (fromTodo) { store.remove('todo', fromTodo); freshNext = true; toast('習慣にしました（元の ToDo は消しました）'); }
       closeSheet();
     };
   });
