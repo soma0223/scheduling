@@ -136,9 +136,12 @@ const sameAuto = (a, b) =>
  * 既存の自動ブロックは、まだ有効（元が存在・未完了・衝突なし）ならそのまま残す（毎分ずれないように）。
  * 同じ入力からは同じ ID・同じ結果になるので、複数端末で同時に実行しても衝突しない。
  *
+ * fresh=true なら、まだ始まっていない固定でない自動ブロックをいったん全部白紙に戻して並び順どおりに置き直す
+ *（「再配置」ボタン・並び順や優先設定の変更時）。
+ *
  * @returns {{upserts: object[], removes: string[], unplaced: {todos: object[], habits: object[]}}}
  */
-export function plan({ events, todos, habits, settings }, now = new Date()) {
+export function plan({ events, todos, habits, settings }, now = new Date(), { fresh = false } = {}) {
   const s = { ...DEFAULT_SETTINGS, ...settings };
   const today = ymd(now), nowMin = minutesOf(now);
   const horizon = Math.max(1, Math.min(28, +s.horizon || 7));
@@ -179,6 +182,7 @@ export function plan({ events, todos, habits, settings }, now = new Date()) {
     if (a.kind === 'todo' && src.done) { removes.push(a.id); continue; }
     if (a.kind === 'habit' && (src.skip || []).includes(a.date)) { removes.push(a.id); continue; }
     if (a.pinned) { keep.push(a); continue; }
+    if (fresh) { removes.push(a.id); continue; }
     if (a.date > lastDay) { removes.push(a.id); continue; }
     if (a.kind === 'habit') {
       const ok = (src.days || []).includes(pd(a.date).getDay()) && !(src.skip || []).includes(a.date) &&
@@ -198,7 +202,7 @@ export function plan({ events, todos, habits, settings }, now = new Date()) {
   for (const t of todoMap.values()) {
     if (t.done || !(+t.minutes > 0)) continue;
     const running = keep
-      .filter((k) => k.kind === 'todo' && k.ref === t.id && k.date === today && toM(k.end) > nowMin)
+      .filter((k) => k.kind === 'todo' && k.ref === t.id && k.date === today && started(k) && toM(k.end) > nowMin)
       .reduce((a, k) => a + toM(k.end) - Math.max(toM(k.start), 0), 0);
     const pinnedFuture = keep
       .filter((k) => k.kind === 'todo' && k.ref === t.id && k.pinned && !started(k))

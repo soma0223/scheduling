@@ -189,3 +189,32 @@ test('優先順位: 条件つきのToDoは、条件なしより先に枠を取�
   const r2 = plan({ events, todos, habits: [], settings: { ...SP, constrainedFirst: '0' } }, MON);
   assert.deepEqual(slot(r2, 'home'), []);
 });
+
+test('fresh: 並び順を変えると、置き済みの枠も並べ直される', () => {
+  const s = { ...S, dayStart: '09:00', dayEnd: '12:00', horizon: 1 };
+  const now = new Date(2026, 10, 2, 8, 0);
+  const todos = [{ id: 'a', title: 'A', minutes: 60, order: 1 }, { id: 'b', title: 'B', minutes: 60, order: 2 }];
+  const r1 = plan({ events: [], todos, habits: [], settings: s }, now);
+  const placed = r1.upserts;
+  assert.equal(placed.find((e) => e.ref === 'a').start, '09:00');
+  const swapped = [{ ...todos[0], order: 2 }, { ...todos[1], order: 1 }];
+  // 通常の再計算では動かない（毎分ずれない仕様）
+  assert.deepEqual(plan({ events: placed, todos: swapped, habits: [], settings: s }, now).upserts, []);
+  // fresh なら並び順どおりに入れ替わる
+  const r = plan({ events: placed, todos: swapped, habits: [], settings: s }, now, { fresh: true });
+  const at = (id) => r.upserts.find((e) => e.ref === id).start;
+  assert.equal(at('b'), '09:00');
+  assert.equal(at('a'), '10:00');
+  // 順番が同じなら fresh でも変更なし
+  assert.deepEqual(plan({ events: placed, todos, habits: [], settings: s }, now, { fresh: true }).upserts, []);
+});
+
+test('fresh: 固定した枠と開始済みの枠は動かさない', () => {
+  const s = { ...S, dayStart: '09:00', dayEnd: '12:00', horizon: 1 };
+  const now = new Date(2026, 10, 2, 8, 0);
+  const todos = [{ id: 'a', title: 'A', minutes: 60, order: 1 }];
+  const pinned = ev('p', '2026-11-02', '11:00', '12:00', { auto: true, kind: 'todo', ref: 'a', pinned: true });
+  const r = plan({ events: [pinned], todos: [{ ...todos[0], minutes: 120 }], habits: [], settings: s }, now, { fresh: true });
+  assert.deepEqual(r.removes, []);
+  assert.equal(r.upserts.length, 1); // 残り60分ぶんだけ新しく置く
+});

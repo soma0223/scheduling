@@ -31,8 +31,8 @@ function applyTheme() {
 
 // ---------------------------------------------------------------- 自動配置
 let replanTimer = null;
-function replan(now = new Date()) {
-  const r = plan({ events: store.raw('event'), todos: store.raw('todo'), habits: store.raw('habit'), settings: S() }, now);
+function replan(now = new Date(), fresh = false) {
+  const r = plan({ events: store.raw('event'), todos: store.raw('todo'), habits: store.raw('habit'), settings: S() }, now, { fresh });
   unplaced = r.unplaced;
   if (r.upserts.length || r.removes.length) {
     store.batch(({ put, remove }) => {
@@ -43,7 +43,12 @@ function replan(now = new Date()) {
   }
   return false;
 }
-const scheduleReplan = () => { clearTimeout(replanTimer); replanTimer = setTimeout(() => { if (!replan()) render(); }, 50); };
+// 並び順などを変えたときは、置き済みの枠も並べ直す（freshNext）
+let freshNext = false;
+const scheduleReplan = () => {
+  clearTimeout(replanTimer);
+  replanTimer = setTimeout(() => { const f = freshNext; freshNext = false; if (!replan(new Date(), f)) render(); }, 50);
+};
 
 // ---------------------------------------------------------------- 画面切り替え
 function setTab(t) {
@@ -355,6 +360,7 @@ function renderTodos() {
 function moveTodo(open, idx, dir) {
   const j = idx + dir;
   if (j < 0 || j >= open.length) return;
+  freshNext = true;
   const arr = open.slice();
   [arr[idx], arr[j]] = [arr[j], arr[idx]];
   store.batch(({ put }) => arr.forEach((t, i) => { if (t.order !== (i + 1) * 10) put('todo', { ...t, order: (i + 1) * 10 }); }));
@@ -383,7 +389,7 @@ $('#todo-add').onsubmit = (e) => {
   $('#todo-in').value = '';
   estimateTodos([t]);
 };
-$('#replan').onclick = () => { replan(); render(); toast('空き時間に割り振り直しました'); };
+$('#replan').onclick = () => { replan(new Date(), true); render(); toast('並び順どおりに割り振り直しました'); };
 
 function openTodo(id) {
   const t = store.get('todo', id);
@@ -411,6 +417,7 @@ function openTodo(id) {
     $('#t-ai', p).onclick = () => { closeSheet(); estimateTodos([{ ...t, title: $('#t-title', p).value.trim() || t.title }]); };
     $('#form', p).onsubmit = (e) => {
       e.preventDefault();
+      freshNext = true;
       const minutes = Math.max(0, Math.round((+$('#t-min', p).value || 0) / 5) * 5);
       store.put('todo', { ...t, title: $('#t-title', p).value.trim(), minutes, due: $('#t-due', p).value, priority: pri, memo: $('#t-memo', p).value, ...getC(), ...(minutes !== +t.minutes ? { estSource: 'manual', estReason: '' } : {}) });
       closeSheet();
@@ -564,6 +571,7 @@ async function renderSettings() {
       const a = k === 'dayStart' ? v : s.dayStart, b = k === 'dayEnd' ? v : s.dayEnd;
       if (!v || toM(b) <= toM(a)) { toast('終了は開始より後にしてください'); inp.value = s[k]; return; }
     }
+    if (k === 'todoOrder' || k === 'constrainedFirst') freshNext = true;
     store.setSettings({ [k]: v });
     if (k === 'theme') applyTheme();
   }));
