@@ -271,3 +271,10 @@ test('深夜: 習慣を 0:00〜2:00 の時間帯に置ける（前日の夜扱�
   // 月曜(11/2)の夜 = 11/3 0:00
   assert.deepEqual(r.upserts.map((e) => `${e.date} ${e.start}`), ['2026-11-03 00:00']);
 });
+
+test('活動時間: 保存されたフラグと食い違っても、終了が開始以前なら翌日として扱う', () => {
+  const now = new Date(2026, 10, 2, 20, 53);
+  const todos = [{ id: 'a', title: 'A', minutes: 60 }];
+  const r = plan({ events: [], todos, habits: [], settings: { ...S, dayEnd: '02:59', dayEndNext: false, horizon: 1 } }, now);
+  assert.deepEqual(r.upserts.map((e) => `${e.date} ${e.start}`), ['2026-11-02 20:55']);
+});

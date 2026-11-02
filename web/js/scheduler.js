@@ -36,7 +36,7 @@ export const HABIT_COLOR = '#8b5cf6';
 export function dayBounds(s) {
   const ds = toM(s.dayStart);
   let de = toM(s.dayEnd);
-  if (s.dayEndNext) de = Math.min(de + 1440, ds + 1440);
+  if (de <= ds) de += 1440; // 終了が開始以前なら翌日（保存されたフラグに頼らない）
   return { ds, de };
 }
 

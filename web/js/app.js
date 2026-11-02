@@ -15,6 +15,7 @@ const el = (tag, cls, txt) => { const x = document.createElement(tag); if (cls) 
 const qs = new URLSearchParams(location.search);
 // 活動時間が翌日にまたがるとき、深夜0〜2時は「前日の夜」。「今日」は論理日で数える
 const logicalToday = () => logicalNow(new Date(), store.settings()).date;
+const de0 = (s) => dayBounds(s).de;
 // 論理日の分（24:00 以降は「翌」）の表示用
 const clock = (m) => (m >= 1440 ? '翌' + fm(m - 1440) : fm(m));
 let sel = /^\d{4}-\d{2}-\d{2}$/.test(qs.get('date') || '') ? qs.get('date') : logicalToday();
@@ -109,7 +110,7 @@ function renderDay() {
   const big = el('div', 'big');
   big.append(isToday ? 'この先の空き時間 ' : '空き時間 ', el('b', 0, tot ? dur(tot) : 'なし'));
   sum.append(big);
-  sum.append(el('div', 'sub', `活動時間 ${s.dayStart}–${s.dayEndNext ? '翌' : ''}${s.dayEnd}・${s.minFree}分以上の隙間を表示`));
+  sum.append(el('div', 'sub', `活動時間 ${s.dayStart}–${toM(s.dayEnd) <= toM(s.dayStart) ? '翌' : ''}${s.dayEnd}・${s.minFree}分以上の隙間を表示`));
   const ch = el('div', 'chips');
   fr.forEach(([a, b]) => {
     const c = el('button', 'chip', `${clock(a)}–${clock(b)}（${dur(b - a)}）`);
@@ -118,6 +119,7 @@ function renderDay() {
   });
   plain.forEach((e) => { const c = el('button', 'ad', e.title); c.onclick = () => openEvent(e.id); ch.append(c); });
   if (ch.children.length) sum.append(ch);
+  if (isToday && ln.min >= de0(s)) sum.append(el('div', 'warn', `いまは活動時間（${s.dayStart}–${toM(s.dayEnd) <= toM(s.dayStart) ? '翌' : ''}${s.dayEnd}）の外です。今日の残りには配分されません（設定で変えられます）`));
   const uh = unplaced.habits.filter((x) => x.date === sel);
   if (uh.length) sum.append(el('div', 'warn', '⚠ 入りきらない習慣: ' + uh.map((x) => store.get('habit', x.id)?.title).filter(Boolean).join('、')));
 
@@ -514,7 +516,7 @@ async function renderSettings() {
   <div class="card group">
     <h2>活動時間</h2>
     <div class="srow"><span>開始</span><input type="time" data-k="dayStart" value="${s.dayStart}"></div>
-    <div class="srow"><span>終了${s.dayEndNext ? '（翌日）' : ''}<small>開始より前の時刻（例 02:00）にすると、翌日の深夜までになります</small></span><input type="time" data-k="dayEnd" value="${s.dayEnd}"></div>
+    <div class="srow"><span>終了${toM(s.dayEnd) <= toM(s.dayStart) ? '（翌日）' : ''}<small>開始より前の時刻（例 02:00）にすると、翌日の深夜までになります</small></span><input type="time" data-k="dayEnd" value="${s.dayEnd}"></div>
     <div class="srow"><span>空き時間とみなす長さ<small>これ以上の隙間を「空き」として表示</small></span><input type="number" min="5" max="240" step="5" data-k="minFree" value="${s.minFree}">分</div>
   </div>
   <div class="card group">
@@ -580,9 +582,11 @@ async function renderSettings() {
     document.activeElement?.blur?.();
     store.setSettings({ places: [...S().places, { name, transit: false }] });
   };
-  box.querySelectorAll('[data-k]').forEach((inp) => (inp.onchange = () => {
+  box.querySelectorAll('[data-k]').forEach((inp) => {
+    const commit = () => {
     const k = inp.dataset.k;
     let v = inp.value;
+    if (String(v) === String(S()[k])) return; // 変更なし
     if (inp.type === 'number') v = Math.max(+inp.min || 0, Math.min(+inp.max || 999, Math.round(+v || 0)));
     let extra = {};
     if (k === 'dayStart' || k === 'dayEnd') {
@@ -594,7 +598,13 @@ async function renderSettings() {
     if (k === 'todoOrder' || k === 'constrainedFirst') freshNext = true;
     store.setSettings({ [k]: v, ...extra });
     if (k === 'theme') applyTheme();
-  }));
+    };
+    if (inp.type === 'time') {
+      // iPhone のピッカーは回している途中でも change が来る。閉じた（フォーカスが外れた）ときだけ保存する
+      inp.addEventListener('change', () => { if (document.activeElement !== inp) commit(); });
+      inp.addEventListener('blur', commit);
+    } else inp.onchange = commit;
+  });
   box.querySelectorAll('#notify .tg').forEach((b) => (b.onclick = () => {
     const m = +b.dataset.m, set = new Set(S().notify);
     set.has(m) ? set.delete(m) : set.add(m);
