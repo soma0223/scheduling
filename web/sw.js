@@ -1,5 +1,5 @@
 // Service Worker: オフライン対応 + Web Push 受信
-const VERSION = 'v2';
+const VERSION = 'v3';
 const SHELL = `shell-${VERSION}`;
 const RUNTIME = `runtime-${VERSION}`;
 const ASSETS = [
@@ -9,7 +9,12 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(SHELL).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  // HTTP キャッシュ（GitHub Pages は最大10分）を飛ばして、必ず最新を取り込む
+  e.waitUntil(
+    caches.open(SHELL)
+      .then((c) => Promise.all(ASSETS.map((u) => c.add(new Request(u, { cache: 'reload' })))))
+      .then(() => self.skipWaiting()),
+  );
 });
 
 self.addEventListener('activate', (e) => {
@@ -30,7 +35,7 @@ self.addEventListener('fetch', (e) => {
   if (url.origin === location.origin) {
     // アプリ本体: ネット優先 → 失敗したらキャッシュ（更新がすぐ反映されるように）
     e.respondWith(
-      fetch(req)
+      fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' }) // 毎回サーバーに「更新ある？」と確認
         .then((res) => {
           if (res.ok) { const copy = res.clone(); caches.open(SHELL).then((c) => c.put(req, copy)); }
           return res;

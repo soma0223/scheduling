@@ -68,6 +68,9 @@ function setTab(t) {
 }
 
 function render() {
+  // 設定の入力中（iPhone の時刻ピッカーなど）に描き直すと、ピッカーが閉じてしまう。入力が終わってから描き直す
+  const ae = document.activeElement;
+  if (tab === 'settings' && ae && ae.matches?.('input,select') && $('#settings').contains(ae)) return;
   if (tab === 'day') renderDay();
   else if (tab === 'todo') renderTodos();
   else if (tab === 'habit') renderHabits();
@@ -574,6 +577,7 @@ async function renderSettings() {
     const name = $('#place-new').value.trim();
     if (!name) return;
     if (S().places.some((p) => p.name === name)) return toast('同じ名前の場所があります');
+    document.activeElement?.blur?.();
     store.setSettings({ places: [...S().places, { name, transit: false }] });
   };
   box.querySelectorAll('[data-k]').forEach((inp) => (inp.onchange = () => {
@@ -650,6 +654,7 @@ function pushNote(perm, sub, user) {
 }
 
 // ---------------------------------------------------------------- イベント
+$('#settings').addEventListener('focusout', () => setTimeout(() => { if (tab === 'settings' && !sheetOpen) render(); }, 80));
 $('#tabs').onclick = (e) => { const b = e.target.closest('[data-tab]'); if (b) setTab(b.dataset.tab); };
 $('#fab').onclick = () => {
   if (tab === 'day') {
@@ -692,6 +697,12 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) { re
 
 // ---------------------------------------------------------------- 起動
 if ('serviceWorker' in navigator) {
+  // 新しい版の Service Worker に切り替わったら、自動で読み込み直す（初回インストール時は除く）
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController && !reloaded && !sheetOpen) { reloaded = true; location.reload(); }
+  });
   navigator.serviceWorker.register('sw.js').catch((e) => console.warn('SW', e));
   navigator.serviceWorker.addEventListener('message', (e) => {
     if (e.data?.type === 'open' && e.data.date) { sel = e.data.date; setTab('day'); }
