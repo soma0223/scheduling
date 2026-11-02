@@ -101,3 +101,18 @@ test('plan: 習慣のスキップ日は配置しない', () => {
   const r = plan({ events: [], todos: [], habits, settings: S }, NOW);
   assert.deepEqual(r.upserts.map((e) => e.date), ['2026-11-02']);
 });
+
+test('plan: 手動の順番（order）どおりに空きへ入る', () => {
+  const s = { ...S, dayStart: '09:00', dayEnd: '12:00', horizon: 1, todoOrder: 'manual' };
+  const todos = [
+    { id: 'a', title: 'A', minutes: 60, order: 20, due: '2026-11-02' },
+    { id: 'b', title: 'B', minutes: 60, order: 10 },
+  ];
+  const r = plan({ events: [], todos, habits: [], settings: s }, new Date(2026, 10, 2, 8, 0));
+  const at = (id) => r.upserts.find((e) => e.ref === id).start;
+  assert.equal(at('b'), '09:00');
+  assert.equal(at('a'), '10:00');
+  // 期限順に切り替えると A(期限あり) が先
+  const r2 = plan({ events: [], todos, habits: [], settings: { ...s, todoOrder: 'due' } }, new Date(2026, 10, 2, 8, 0));
+  assert.equal(r2.upserts.find((e) => e.ref === 'a').start, '09:00');
+});

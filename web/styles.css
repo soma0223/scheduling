@@ -128,3 +128,7 @@ h1 input{position:absolute;inset:0;opacity:0;width:100%;height:100%}
 
 .toast{position:fixed;left:50%;bottom:calc(var(--tabh) + 84px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(10px);background:var(--tx);color:var(--bg);padding:8px 14px;border-radius:10px;font-size:14px;opacity:0;pointer-events:none;transition:.2s;z-index:10;max-width:calc(100% - 32px)}
 .toast.on{opacity:1;transform:translateX(-50%)}
+
+.mv{flex:none;display:flex;flex-direction:column;gap:2px;align-self:center}
+.mv button{width:34px;height:26px;border-radius:6px;border:1px solid var(--line);background:var(--bg);font-size:11px;color:var(--sub)}
+.mv button:disabled{opacity:.3}

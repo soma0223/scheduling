@@ -2,7 +2,7 @@ import * as store from './store.js';
 import * as sync from './sync.js';
 import * as push from './push.js';
 import * as ai from './ai.js';
-import { plan, freeSlots, freeTotal, HABIT_COLOR } from './scheduler.js';
+import { plan, freeSlots, freeTotal, todoCompare, HABIT_COLOR } from './scheduler.js';
 import { WD, toM, fm, dur, ymd, pd, addDays, minutesOf, label, uid } from './util.js';
 
 const COLORS = ['#2f6fed', '#e0573d', '#2e9e6b', '#d49a1a', '#8b5cf6'];
@@ -265,12 +265,13 @@ function renderTodos() {
     ? '✨ 追加すると AI が所要時間を見積もり、今後1週間の空き時間に自動で割り振ります。'
     : '追加すると所要時間を見積もり（ログインすると AI 見積もり）、今後1週間の空き時間に自動で割り振ります。';
   const list = store.all('todo');
-  const open = list.filter((t) => !t.done).sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999') || (+b.priority || 2) - (+a.priority || 2) || String(a.createdAt).localeCompare(String(b.createdAt)));
+  const manual = S().todoOrder !== 'due';
+  const open = list.filter((t) => !t.done).sort(todoCompare(S()));
   const done = list.filter((t) => t.done).sort((a, b) => String(b.doneAt).localeCompare(String(a.doneAt))).slice(0, 20);
   const wrap = $('#todo-list');
   wrap.innerHTML = '';
   if (!list.length) { wrap.append(el('div', 'empty', 'ToDo はまだありません')); return; }
-  const row = (t) => {
+  const row = (t, idx) => {
     const b = el('div', 'card item' + (t.done ? ' done' : ''));
     const chk = el('button', 'check' + (t.done ? ' on' : ''), t.done ? '✓' : '');
     chk.setAttribute('aria-label', t.done ? '未完了に戻す' : '完了にする');
@@ -292,10 +293,21 @@ function renderTodos() {
     main.append(m);
     main.onclick = () => openTodo(t.id);
     b.append(chk, main);
+    if (manual && !t.done) {
+      const mv = el('div', 'mv');
+      const up = el('button', '', '▲'), dn = el('button', '', '▼');
+      up.setAttribute('aria-label', '先に回す'); dn.setAttribute('aria-label', '後に回す');
+      up.disabled = idx === 0; dn.disabled = idx === open.length - 1;
+      up.onclick = () => moveTodo(open, idx, -1);
+      dn.onclick = () => moveTodo(open, idx, 1);
+      mv.append(up, dn);
+      b.append(mv);
+    }
     return b;
   };
+  wrap.append(el('div', 'sect', manual ? '割り振りの順番（上から先に空きへ入れます）' : '割り振りの順番：期限が近い順（設定で手動に変更できます）'));
   const l1 = el('div', 'list');
-  open.forEach((t) => l1.append(row(t)));
+  open.forEach((t, i) => l1.append(row(t, i)));
   wrap.append(l1);
   if (done.length) {
     wrap.append(el('div', 'sect', '完了'));
@@ -303,6 +315,15 @@ function renderTodos() {
     done.forEach((t) => l2.append(row(t)));
     wrap.append(l2);
   }
+}
+
+/** open（表示順）の idx 番目を dir(-1/+1) だけ動かす。全件に連番を振り直してから入れ替える */
+function moveTodo(open, idx, dir) {
+  const j = idx + dir;
+  if (j < 0 || j >= open.length) return;
+  const arr = open.slice();
+  [arr[idx], arr[j]] = [arr[j], arr[idx]];
+  store.batch(({ put }) => arr.forEach((t, i) => { if (t.order !== (i + 1) * 10) put('todo', { ...t, order: (i + 1) * 10 }); }));
 }
 
 async function estimateTodos(todos) {
@@ -324,7 +345,7 @@ $('#todo-add').onsubmit = (e) => {
   e.preventDefault();
   const title = $('#todo-in').value.trim();
   if (!title) return;
-  const t = store.put('todo', { id: uid(), title, minutes: 0, priority: 2, due: '', memo: '', done: false, createdAt: new Date().toISOString() });
+  const t = store.put('todo', { id: uid(), title, minutes: 0, priority: 2, due: '', memo: '', done: false, createdAt: new Date().toISOString(), order: Date.now() });
   $('#todo-in').value = '';
   estimateTodos([t]);
 };
@@ -442,6 +463,7 @@ async function renderSettings() {
   <div class="card group">
     <h2>自動配置</h2>
     <div class="srow"><span>ToDo を分割する最小単位</span><input type="number" min="5" max="240" step="5" data-k="minChunk" value="${s.minChunk}">分</div>
+    <div class="srow"><span>ToDo を入れる順番<small>手動：ToDo 画面の ▲▼ で並べた順</small></span><select data-k="todoOrder"><option value="manual">手動の順番</option><option value="due">期限が近い順</option></select></div>
     <div class="srow"><span>配置する期間</span><input type="number" min="1" max="28" step="1" data-k="horizon" value="${s.horizon}">日</div>
   </div>
   <div class="card group">
@@ -471,6 +493,7 @@ async function renderSettings() {
   </div>
   <p class="hint" style="text-align:center">マイスケジュール PWA</p>`;
   box.querySelector('select[data-k=theme]').value = s.theme || 'auto';
+  box.querySelector('select[data-k=todoOrder]').value = s.todoOrder || 'manual';
   box.querySelectorAll('[data-k]').forEach((inp) => (inp.onchange = () => {
     const k = inp.dataset.k;
     let v = inp.value;

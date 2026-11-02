@@ -15,6 +15,7 @@ export const DEFAULT_SETTINGS = {
   minFree: 30, // この分数以上の隙間を「空き時間」として表示
   minChunk: 30, // ToDo を分割するときの最小単位
   horizon: 7, // 何日先まで自動配置するか
+  todoOrder: 'manual', // ToDo の割り振り順: 'manual'=手動の並び順 / 'due'=期限が近い順→優先度
   notify: [10], // 何分前に通知するか（複数可）
   theme: 'auto',
 };
@@ -55,6 +56,23 @@ export function gaps(busy, lo, hi) {
   }
   if (hi > t) out.push([t, hi]);
   return out;
+}
+
+/**
+ * ToDo の並び順（一覧表示と自動配置で共通）
+ *  manual: 手動で並べた順（order）。order が無いものは作成順で末尾
+ *  due   : 期限が近い順 → 優先度（高い順） → 作成順
+ */
+export function todoCompare(s) {
+  const created = (a, b) => String(a.createdAt || a.id).localeCompare(String(b.createdAt || b.id));
+  if (s.todoOrder === 'due') {
+    return (a, b) => (a.due || '9999').localeCompare(b.due || '9999') || (+b.priority || 2) - (+a.priority || 2) || created(a, b);
+  }
+  const ord = (t) => (Number.isFinite(+t.order) && t.order !== null && t.order !== '' ? +t.order : Infinity);
+  return (a, b) => {
+    const x = ord(a), y = ord(b);
+    return x === y ? created(a, b) : x < y ? -1 : 1;
+  };
 }
 
 /** その日の探索下限（今日なら現在時刻以降） */
@@ -180,14 +198,10 @@ export function plan({ events, todos, habits, settings }, now = new Date()) {
     }
   }
 
-  // --- 3. ToDo：期限が近い順 → 優先度 → 作成順 ---
+  // --- 3. ToDo：設定した順（手動 or 期限順）に、上のものから空きを埋めていく ---
   const todoList = [...todoMap.values()]
     .filter((t) => (need.get(t.id) || 0) > 0)
-    .sort((a, b) =>
-      (a.due || '9999').localeCompare(b.due || '9999') ||
-      (+b.priority || 2) - (+a.priority || 2) ||
-      String(a.createdAt || a.id).localeCompare(String(b.createdAt || b.id)),
-    );
+    .sort(todoCompare(s));
   for (const t of todoList) {
     let rest = need.get(t.id);
     const before = days.filter((d) => !t.due || d <= t.due);
