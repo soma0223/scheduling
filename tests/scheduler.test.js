@@ -449,3 +449,36 @@ test('繰り返し: 空き時間・ToDo 配置・移動時間・「あとから�
   assert.deepEqual(r2.upserts, []);
   assert.deepEqual(r2.removes, []);
 });
+
+// ---- 帰宅の所要時間 ----
+const TH = { ...TS, routes: [{ from: '家', to: '学校', minutes: 40, mode: '電車', backMinutes: 55, backMode: 'バス' }], modes: [{ name: '徒歩', work: false }, { name: '電車', work: true }, { name: 'バス', work: true }] };
+
+test('帰宅: 行きと帰りで時間・手段を変えられる', () => {
+  const t = travelSegments([SCH], TH);
+  assert.deepEqual(t.map((x) => [x.id, tmin(x), x.place]), [['travel-s', '08:20-09:00', '電車'], ['travel-home-s', '15:00-15:55', 'バス']]);
+  // 帰りの欄を空にすると行きと同じ
+  const same = travelSegments([SCH], { ...TH, routes: [{ from: '家', to: '学校', minutes: 40, mode: '電車' }] });
+  assert.deepEqual(same.map((x) => tmin(x)), ['08:20-09:00', '15:00-15:40']);
+});
+
+test('帰宅: 予定ごとの指定（別の手段・時間／帰宅の移動なし／ルートが無くても）', () => {
+  const back = (e, s = TH) => travelSegments([e], s).find((x) => x.id === 'travel-home-s');
+  const t = back({ ...SCH, travelAfter: { mode: '徒歩', minutes: 25 } });
+  assert.deepEqual([tmin(t), t.place], ['15:00-15:25', '徒歩']);
+  assert.equal(back({ ...SCH, travelAfter: { mode: '', minutes: 0 } }), undefined);
+  // 手段だけ変える（時間は帰りのルートどおり）
+  const m = back({ ...SCH, travelAfter: { mode: '徒歩', minutes: null } });
+  assert.deepEqual([tmin(m), m.place], ['15:00-15:55', '徒歩']);
+  // ルートが未登録でも、その予定に時間を指定すれば帰宅の移動ができる
+  const none = back({ ...SCH, travelAfter: { mode: '徒歩', minutes: 20 } }, { ...TH, routes: [] });
+  assert.deepEqual(tmin(none), '15:00-15:20');
+});
+
+test('帰宅: 帰宅の移動が終わってから家のToDoが入る。冪等', () => {
+  const now = new Date(2026, 10, 2, 6, 0);
+  const todos = [{ id: 'h', title: '家の用事', minutes: 30, places: ['家'], notBefore: '15:00' }];
+  const e = { ...SCH, travelAfter: { mode: '徒歩', minutes: 25 } };
+  const r = plan({ events: [e], todos, habits: [], settings: TH }, now);
+  assert.deepEqual(slot(r, 'h'), ['15:25-15:55']);
+  assert.deepEqual(plan({ events: [e, ...r.upserts], todos, habits: [], settings: TH }, now).upserts, []);
+});

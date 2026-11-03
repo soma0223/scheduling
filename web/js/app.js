@@ -284,10 +284,10 @@ function bindConstraints(p, cur) {
 
 // ---------------------------------------------------------------- 予定シート
 /** 予定ごとの移動の指定。null=ルート設定どおり、{minutes:0}=移動なし */
-function readTravel(p) {
+function readTravel(p, modeId = 'f-tmode', minId = 'f-tmin') {
   const pv = $('#f-place', p).value;
   if (!pv || pv === '__new__') return null;
-  const m = $('#f-tmode', p).value, mi = $('#f-tmin', p).value;
+  const m = $('#' + modeId, p).value, mi = $('#' + minId, p).value;
   if (m === '-') return { mode: '', minutes: 0 };
   if (!m && mi === '') return null;
   return { mode: m, minutes: mi === '' ? null : Math.max(5, Math.round(+mi)) };
@@ -326,6 +326,9 @@ function openEvent(id, s, e) {
       <label>ここへの移動（場所が変わるときだけ使われます）</label>
       <div class="row"><div><select id="f-tmode"><option value="">設定のルートどおり</option><option value="-" ${x?.travel && x.travel.minutes === 0 ? 'selected' : ''}>移動なし</option>${(S().modes || []).map((m) => `<option value="${esc(m.name)}" ${x?.travel?.minutes !== 0 && x?.travel?.mode === m.name ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></div>
       <div><input type="number" id="f-tmin" min="5" max="300" step="5" placeholder="分（空=自動）" value="${x?.travel && x.travel.minutes ? x.travel.minutes : ''}"></div></div>
+      <label>この予定のあとの帰宅（家以外で、その日の最後の予定のときに使われます）</label>
+      <div class="row"><div><select id="f-hmode"><option value="">設定のルートどおり</option><option value="-" ${x?.travelAfter && x.travelAfter.minutes === 0 ? 'selected' : ''}>帰宅の移動なし</option>${(S().modes || []).map((m) => `<option value="${esc(m.name)}" ${x?.travelAfter?.minutes !== 0 && x?.travelAfter?.mode === m.name ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></div>
+      <div><input type="number" id="f-hmin" min="5" max="300" step="5" placeholder="分（空=自動）" value="${x?.travelAfter && x.travelAfter.minutes ? x.travelAfter.minutes : ''}"></div></div>
     </div>
     <label>繰り返し（曜日を選ぶと、毎週その曜日に入ります）</label>
     <div class="toggles" id="f-rep">${[1, 2, 3, 4, 5, 6, 0].map((d) => `<button type="button" class="tg ${repDays.has(d) ? 'on' : ''}" data-d="${d}">${WD[d]}</button>`).join('')}</div>
@@ -391,7 +394,7 @@ function openEvent(id, s, e) {
         const rd = [...repDays];
         const until = $('#f-until', p).value;
         const o = { title: $('#f-title', p).value.trim(), date: rd.length ? nextMatching(date, rd) : date, start: st, end: en,
-          repeat: rd.length ? { days: rd, until, tz: Intl.DateTimeFormat().resolvedOptions().timeZone } : null, skip: rd.length ? (x?.skip || []) : [], memo: $('#f-memo', p).value, place: $('#f-place', p).value === '__new__' ? '' : $('#f-place', p).value, travel: readTravel(p), color: $('input[name=c]:checked', p)?.value || COLORS[0] };
+          repeat: rd.length ? { days: rd, until, tz: Intl.DateTimeFormat().resolvedOptions().timeZone } : null, skip: rd.length ? (x?.skip || []) : [], memo: $('#f-memo', p).value, place: $('#f-place', p).value === '__new__' ? '' : $('#f-place', p).value, travel: readTravel(p), travelAfter: readTravel(p, 'f-hmode', 'f-hmin'), color: $('input[name=c]:checked', p)?.value || COLORS[0] };
         store.put('event', { id: x?.id || uid(), ...o });
       }
       if (!(x && x.repeat && repDays.size)) sel = normalizeEvent({ date: x?.auto ? date : repDays.size ? nextMatching(date, [...repDays]) : date, start: st, end: en }, S()).date; // 深夜の予定は前日の夜として表示
@@ -672,9 +675,10 @@ async function renderSettings() {
   <div class="card group">
     <h2>移動</h2>
     <p class="hint" style="margin-top:4px">場所が変わる予定のあいだに、ここで決めた時間だけ「移動」を確保します（最初の予定の前と、最後の予定のあとは、ふだんいる場所との行き来）。行きも帰りも同じです。</p>
-    ${(s.routes || []).map((r, i) => `<div class="srow"><span>${esc(r.from)} ⇔ ${esc(r.to)}<small>${r.minutes}分${r.mode ? '・' + esc(r.mode) : ''}</small></span><button class="ghost" data-rd="${i}" aria-label="ルートを削除">削除</button></div>`).join('')}
+    ${(s.routes || []).map((r, i) => `<div class="srow"><span>${esc(r.from)} ⇔ ${esc(r.to)}<small>${r.from}→${r.to}：${r.minutes}分${r.mode ? '・' + esc(r.mode) : ''}${r.backMinutes || r.backMode ? `／帰り：${r.backMinutes || r.minutes}分${(r.backMode || r.mode) ? '・' + esc(r.backMode || r.mode) : ''}` : ''}</small></span><button class="ghost" data-rd="${i}" aria-label="ルートを削除">削除</button></div>`).join('')}
     <div class="row" style="padding:8px 0 0"><div><select id="r-from">${(s.places || []).map((p) => `<option>${esc(p.name)}</option>`).join('')}</select></div><div><select id="r-to">${(s.places || []).map((p, i) => `<option ${i === 1 ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div></div>
-    <div class="row" style="padding:8px 0 10px"><div><input type="number" id="r-min" min="5" max="300" step="5" value="30" aria-label="移動時間（分）"></div><div><select id="r-mode"><option value="">手段なし</option>${(s.modes || []).map((m) => `<option>${esc(m.name)}</option>`).join('')}</select></div><div style="flex:none"><button class="pri" id="route-add">追加</button></div></div>
+    <div class="row" style="padding:8px 0 10px"><div><input type="number" id="r-min" min="5" max="300" step="5" value="30" aria-label="移動時間（分）"></div><div><select id="r-mode"><option value="">手段なし</option>${(s.modes || []).map((m) => `<option>${esc(m.name)}</option>`).join('')}</select></div></div>
+    <div class="row" style="padding:0 0 10px"><div><input type="number" id="r-bmin" min="5" max="300" step="5" placeholder="帰りの分（空=同じ）" aria-label="帰りの移動時間（分）"></div><div><select id="r-bmode"><option value="">帰りも同じ手段</option>${(s.modes || []).map((m) => `<option>${esc(m.name)}</option>`).join('')}</select></div><div style="flex:none"><button class="pri" id="route-add">追加</button></div></div>
     <h2>移動手段</h2>
     ${(s.modes || []).map((m, i) => `<div class="srow"><span>${esc(m.name)}</span><label class="chk"><input type="checkbox" data-mw="${i}" ${m.work ? 'checked' : ''}> 作業できる</label><button class="ghost" data-md="${i}" aria-label="${esc(m.name)}を削除">削除</button></div>`).join('')}
     <div class="srow"><input type="text" class="wide" id="mode-new" placeholder="手段を追加（例：タクシー）" maxlength="10"><button class="pri" id="mode-add">追加</button></div>
@@ -724,7 +728,8 @@ async function renderSettings() {
     if (S().routes.some((r) => (r.from === from && r.to === to) || (r.from === to && r.to === from))) return toast('そのルートはもうあります（削除して入れ直してください）');
     document.activeElement?.blur?.();
     freshNext = true;
-    store.setSettings({ routes: [...S().routes, { from, to, minutes, mode: $('#r-mode').value }] });
+    const bm = Math.round(+$('#r-bmin').value);
+    store.setSettings({ routes: [...S().routes, { from, to, minutes, mode: $('#r-mode').value, backMinutes: bm > 0 ? bm : null, backMode: $('#r-bmode').value }] });
   };
   box.querySelectorAll('[data-mw]').forEach((c) => (c.onchange = () => store.setSettings({ modes: S().modes.map((m, i) => (i === +c.dataset.mw ? { ...m, work: c.checked } : m)) })));
   box.querySelectorAll('[data-md]').forEach((b) => (b.onclick = () => {

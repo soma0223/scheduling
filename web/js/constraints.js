@@ -46,15 +46,23 @@ export const eventPlaceNames = (s) => [...new Set([...(s.places || []).map((p) =
  *  - 予定の場所が前の場所（その日の最初は「ふだんいる場所」）と違い、ルート（from⇔to）があれば、
  *    次の予定の開始までに着くように、直前に移動時間を確保する
  *  - 予定ごとの travel（手段・時間）があればルートより優先。minutes=0 は「移動なし」
- *  - その日の最後の予定が家以外なら、終了後に家までの移動を確保する
+ *  - その日の最後の予定が家以外なら、終了後に家までの移動（帰宅）を確保する。帰りだけ別の時間・手段にでき、
+ *    予定ごとの travelAfter（手段・時間）があればそちらを優先する
  *  - 間に「電車」などの移動中の予定を自分で入れているときは作らない
  * @param events 論理日に直した、自動配置でない予定
  */
 export function travelSegments(events, s) {
   const routes = s.routes || [];
-  if (!routes.length && !events.some((e) => e.travel)) return [];
+  if (!routes.length && !events.some((e) => e.travel || e.travelAfter)) return [];
   const home = s.home || '家';
-  const find = (a, b) => routes.find((r) => (r.from === a && r.to === b) || (r.from === b && r.to === a));
+  // a → b の移動時間と手段。登録は片方向だが、帰り（逆向き）だけ別の時間・手段にもできる（backMinutes / backMode）
+  const find = (a, b) => {
+    const r = routes.find((x) => (x.from === a && x.to === b) || (x.from === b && x.to === a));
+    if (!r) return null;
+    if (r.from === a && r.to === b) return { minutes: +r.minutes, mode: r.mode || '' };
+    return { minutes: +r.backMinutes || +r.minutes, mode: r.backMode || r.mode || '' };
+  };
+  const given = (ov) => ov && ov.minutes !== null && ov.minutes !== undefined && ov.minutes !== '';
   const byDate = new Map();
   for (const e of events) {
     if (e.deleted || e.auto || e.virtual || !e.start || !e.end || !e.place) continue;
@@ -74,7 +82,7 @@ export function travelSegments(events, s) {
     for (const e of stays) {
       if (e.place !== prevPlace) {
         const r = find(prevPlace, e.place), ov = e.travel;
-        const m = ov && ov.minutes !== null && ov.minutes !== undefined && ov.minutes !== '' ? +ov.minutes : r ? +r.minutes : 0;
+        const m = given(ov) ? +ov.minutes : r ? r.minutes : 0;
         const mode = (ov && ov.mode) || (r && r.mode) || '';
         const es = toM(e.start);
         if (m > 0 && !moving.some((x) => toM(x.start) >= prevEnd && toM(x.end) <= es)) {
@@ -87,8 +95,11 @@ export function travelSegments(events, s) {
     }
     const last = stays[stays.length - 1];
     if (last && last.place !== home) {
-      const r = find(last.place, home), m = r ? +r.minutes : 0, le = toM(last.end);
-      if (m > 0 && !moving.some((x) => toM(x.start) >= le)) out.push(seg(`travel-home-${last.id}`, date, le, le + m, last.place, home, r.mode || ''));
+      // 帰宅：予定ごとの指定（travelAfter）があればルート（帰り）より優先。minutes=0 は「帰宅の移動なし」
+      const r = find(last.place, home), ov = last.travelAfter;
+      const m = given(ov) ? +ov.minutes : r ? r.minutes : 0, le = toM(last.end);
+      const mode = (ov && ov.mode) || (r && r.mode) || '';
+      if (m > 0 && !moving.some((x) => toM(x.start) >= le)) out.push(seg(`travel-home-${last.id}`, date, le, le + m, last.place, home, mode));
     }
   }
   return out;
