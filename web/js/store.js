@@ -65,14 +65,16 @@ export const get = (kind, id) => {
   const x = db[kind][id];
   return x && !x.deleted ? x : null;
 };
+/** 削除済みも含めて、そのレコードが（この端末に）あるか */
+export const exists = (kind, id) => !!db[kind][id];
 export const settings = () => db.settings;
 export const meta = () => db.meta;
 
 const stamp = () => new Date().toISOString();
 
-export function put(kind, obj, { silent = false } = {}) {
+export function put(kind, obj, { silent = false, updatedAt } = {}) {
   const prev = db[kind][obj.id] || {};
-  const x = { ...prev, ...obj, deleted: false, updatedAt: stamp() };
+  const x = { ...prev, ...obj, deleted: false, updatedAt: updatedAt || stamp() };
   db[kind][x.id] = x;
   db.meta.dirty[kind + ':' + x.id] = 1;
   if (!silent) emit('local');
@@ -90,7 +92,7 @@ export function remove(kind, id, { silent = false } = {}) {
 /** まとめて書き込み（自動配置の結果など）→ 通知は1回 */
 export function batch(fn) {
   fn({
-    put: (k, o) => put(k, o, { silent: true }),
+    put: (k, o, opts) => put(k, o, { ...opts, silent: true }),
     remove: (k, id) => remove(k, id, { silent: true }),
   });
   emit('local');

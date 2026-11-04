@@ -511,3 +511,39 @@ test('繰り返し: 隔週の予定は、空きの計算にも隔週で効く', 
   assert.deepEqual(fs2([m], '2026-11-09', S, now), [[7 * 60, 23 * 60]]); // 隔週なので 11/9 は無し
   assert.deepEqual(fs2([m], '2026-11-16', S, now), [[7 * 60, 10 * 60], [11 * 60, 23 * 60]]);
 });
+
+// ---- くり返しの ToDo（水曜に出た課題を木曜までに）----
+import { repeatTodoInstances, occurrenceDates } from '../web/js/recurrence.js';
+const TPL = { id: 'kd', title: '課題', minutes: 90, template: true, date: '2026-11-04', repeat: { days: [3], dueAfter: 1 }, priority: 2 }; // 毎週水曜 → 翌日(木)まで
+
+test('くり返しToDo: 出た回ごとに ToDo を作る（出た日・期限つき）。期限が過ぎた回は作らない', () => {
+  const ids = (today, last) => repeatTodoInstances(TPL, today, last).map((t) => `${t.id} ${t.start}→${t.due}`);
+  assert.deepEqual(ids('2026-11-02', '2026-11-16'), ['kd@2026-11-04 2026-11-04→2026-11-05', 'kd@2026-11-11 2026-11-11→2026-11-12']);
+  // 木曜に開いても、水曜に出た課題（期限は今日）は入る。金曜なら期限切れなので作らない
+  assert.deepEqual(ids('2026-11-05', '2026-11-08'), ['kd@2026-11-04 2026-11-04→2026-11-05']);
+  assert.deepEqual(ids('2026-11-06', '2026-11-08'), []);
+  assert.deepEqual(occurrenceDates({ ...TPL, repeat: { days: [3], every: 2 } }, '2026-11-01', '2026-12-01'), ['2026-11-04', '2026-11-18']);
+  assert.deepEqual(repeatTodoInstances({ ...TPL, template: false }, '2026-11-02', '2026-11-16'), []);
+});
+
+test('くり返しToDo: 出た日〜期限のあいだの空きにだけ入る。雛形そのものは配置しない', () => {
+  const s = { ...S, dayStart: '09:00', dayEnd: '12:00', horizon: 7 };
+  const now = new Date(2026, 10, 2, 6, 0); // 月曜
+  const [inst] = repeatTodoInstances(TPL, '2026-11-02', '2026-11-08');
+  // 水曜(11/4)の空きを予定で埋める → 木曜(11/5)に入る。月・火には入らない
+  const events = [ev('b', '2026-11-04', '09:00', '12:00')];
+  const r = plan({ events, todos: [TPL, inst], habits: [], settings: s }, now);
+  const t = r.upserts.filter((e) => e.kind === 'todo');
+  assert.deepEqual(t.map((e) => e.ref), ['kd@2026-11-04']);
+  assert.deepEqual(t.map((e) => `${e.date} ${e.start}-${e.end}`), ['2026-11-05 09:00-10:30']);
+  // 冪等
+  assert.deepEqual(plan({ events: [...events, ...r.upserts], todos: [TPL, inst], habits: [], settings: s }, now).upserts, []);
+  // 水・木ともに埋まっていて期限内に入らないときは、期限のあとの空きに入れる（これまでの動き）
+  const full = [...events, ev('c', '2026-11-05', '09:00', '12:00')];
+  const r2 = plan({ events: full, todos: [inst], habits: [], settings: s }, now);
+  assert.deepEqual(r2.upserts.map((e) => e.date), ['2026-11-06']);
+  // まだ出ていない回（出る日が配置期間の先）は置かない・警告も出さない
+  const future = { ...inst, id: 'kd@2026-12-02', start: '2026-12-02', due: '2026-12-03' };
+  const r3 = plan({ events: [], todos: [future], habits: [], settings: s }, now);
+  assert.deepEqual([r3.upserts, r3.unplaced.todos], [[], []]);
+});

@@ -3,7 +3,7 @@ import * as sync from './sync.js';
 import * as push from './push.js';
 import * as ai from './ai.js';
 import { plan, freeSlots, freeTotal, todoCompare, dayBounds, logicalNow, normalizeEvents, normalizeEvent, HABIT_COLOR } from './scheduler.js';
-import { expandEvents, nextMatching, describeRepeat } from './recurrence.js';
+import { expandEvents, nextMatching, describeRepeat, repeatTodoInstances, describeTodoRepeat, isTodoTemplate } from './recurrence.js';
 import { hasConstraint, describe, taskPlaceNames, eventPlaceNames, travelSegments } from './constraints.js';
 import { WD, toM, fm, dur, ymd, pd, addDays, minutesOf, label, uid } from './util.js';
 
@@ -443,14 +443,16 @@ function renderTodos() {
   $('#todo-hint').textContent = ai.aiAvailable()
     ? '✨ 追加すると AI が所要時間を見積もり、今後1週間の空き時間に自動で割り振ります。'
     : '追加すると所要時間を見積もり（ログインすると AI 見積もり）、今後1週間の空き時間に自動で割り振ります。';
-  const list = store.all('todo');
+  let list = store.all('todo');
   const manual = S().todoOrder !== 'due';
+  const templates = list.filter((t) => t.template);
+  list = list.filter((t) => !t.template); // くり返しの雛形は普段の一覧に出さない
   const open = list.filter((t) => !t.done).sort(todoCompare(S()));
   const doneAll = list.filter((t) => t.done).sort((a, b) => String(b.doneAt).localeCompare(String(a.doneAt)));
   const done = doneAll.slice(0, 30);
   const wrap = $('#todo-list');
   wrap.innerHTML = '';
-  if (!list.length) { wrap.append(el('div', 'empty', 'ToDo はまだありません')); return; }
+  if (!list.length && !templates.length) { wrap.append(el('div', 'empty', 'ToDo はまだありません')); return; }
   const row = (t, idx) => {
     const b = el('div', 'card item' + (t.done ? ' done' : ''));
     const chk = el('button', 'check' + (t.done ? ' on' : ''), t.done ? '✓' : '');
@@ -463,6 +465,8 @@ function renderTodos() {
     if (estimating.has(t.id)) m.innerHTML = '<span><i class="spin"></i> 見積もり中…</span>';
     else if (t.minutes) m.append(el('span', 0, `約${dur(+t.minutes)}${t.estSource === 'ai' ? ' ✨' : ''}`));
     if (t.due) m.append(el('span', t.due < ymd(new Date()) ? 'ng' : '', `期限 ${label(t.due)}`));
+    if (t.series) m.append(el('span', 'pill', '🔁 くり返し'));
+    if (t.start && t.start > ymd(new Date())) m.append(el('span', 0, `${label(t.start)}に出ます`));
     if (+t.priority === 3) m.append(el('span', 'ng', '優先度 高'));
     if (hasConstraint(t)) m.append(el('span', 'pill', describe(t)));
     if (!t.done && t.minutes) {
@@ -486,10 +490,28 @@ function renderTodos() {
     }
     return b;
   };
-  wrap.append(el('div', 'sect', manual ? '割り振りの順番（上から先に空きへ入れます）' : '割り振りの順番：期限が近い順（設定で手動に変更できます）'));
+  if (open.length) wrap.append(el('div', 'sect', manual ? '割り振りの順番（上から先に空きへ入れます）' : '割り振りの順番：期限が近い順（設定で手動に変更できます）'));
   const l1 = el('div', 'list');
   open.forEach((t, i) => l1.append(row(t, i)));
   wrap.append(l1);
+  if (templates.length) {
+    wrap.append(el('div', 'sect', 'くり返しの ToDo（設定した曜日に、自動で1件ずつ出ます）'));
+    const lt = el('div', 'list');
+    for (const t of templates) {
+      const b = el('button', 'card item');
+      const main = el('div', 'main');
+      main.append(el('div', 't', '🔁 ' + t.title));
+      const m = el('div', 'm');
+      m.append(el('span', 0, describeTodoRepeat(t.repeat, WD)));
+      if (t.minutes) m.append(el('span', 0, `約${dur(+t.minutes)}`));
+      if (hasConstraint(t)) m.append(el('span', 'pill', describe(t)));
+      main.append(m);
+      b.append(main);
+      b.onclick = () => openTodo(t.id);
+      lt.append(b);
+    }
+    wrap.append(lt);
+  }
   if (doneAll.length) {
     // 完了済みは普段は隠す。開いたときだけ一覧とまとめて削除を出す
     const tg = el('button', 'ghost donetg', `完了済み ${doneAll.length}件 ${showDone ? '▲' : '▼'}`);
@@ -507,6 +529,17 @@ function renderTodos() {
 }
 
 let showDone = false;
+/** くり返しの雛形から、今日〜配置期間に出る回の ToDo を作る（すでにある・削除した回は作り直さない）。
+ *  作成時刻を「出た日の0時」にして、別の端末で編集・完了した内容を上書きしないようにする */
+function spawnRepeatTodos() {
+  const t0 = logicalToday();
+  const last = addDays(t0, Math.max(1, Math.min(28, +S().horizon || 7)));
+  const made = [];
+  for (const tpl of store.all('todo').filter(isTodoTemplate)) {
+    for (const inst of repeatTodoInstances(tpl, t0, last)) if (!store.exists('todo', inst.id)) made.push(inst);
+  }
+  if (made.length) store.batch(({ put }) => made.forEach((x) => put('todo', x, { updatedAt: new Date(x.start + 'T00:00:00Z').toISOString() })));
+}
 /** 完了してから設定の日数がたった ToDo を削除する（元の ToDo が消えると、その作業枠も自動で消える） */
 function purgeDoneTodos() {
   const keep = S().doneKeepDays;
@@ -555,7 +588,8 @@ function openTodo(id) {
   const t = store.get('todo', id);
   if (!t) return;
   const pl = placementOf(id);
-  openSheet(`<form id="form"><h3>ToDo</h3>
+  const tRepDays = new Set(t.repeat?.days || []);
+  openSheet(`<form id="form"><h3>${t.template ? 'くり返しの ToDo' : 'ToDo'}</h3>
     <label>タイトル</label><input type="text" id="t-title" required value="${esc(t.title)}">
     <div class="row">
       <div><label>所要時間（分）</label><input type="number" id="t-min" min="5" max="600" step="5" value="${+t.minutes || ''}"></div>
@@ -565,11 +599,30 @@ function openTodo(id) {
     <div class="row" style="margin-top:6px;flex-wrap:wrap"><button type="button" class="ghost" id="t-ai">✨ 所要時間を見積もり直す</button><button type="button" class="ghost" id="t-habit">🔁 習慣にする</button></div>
     <label>優先度</label><div class="toggles" id="t-pri">${[3, 2, 1].map((p) => `<button type="button" class="tg ${(+t.priority || 2) === p ? 'on' : ''}" data-p="${p}">${PRI[p]}</button>`).join('')}</div>
     ${constraintFields(t)}
+    ${t.series ? `<p class="note">🔁 くり返しの課題の1回分です。出た日：${esc(t.start || '')}${store.get('todo', t.series) ? '' : '（くり返しの設定は削除されています）'}</p>${store.get('todo', t.series) ? '<button type="button" class="ghost" id="t-openseries">くり返しの設定を開く</button>' : ''}` : `
+    <label>くり返し（課題が毎週出る、など。曜日を選ぶと、その曜日に新しい ToDo が自動で出ます）</label>
+    <div class="toggles" id="t-rep">${[1, 2, 3, 4, 5, 6, 0].map((d) => `<button type="button" class="tg ${tRepDays.has(d) ? 'on' : ''}" data-d="${d}">${WD[d]}</button>`).join('')}</div>
+    <div id="t-rep-opts" ${tRepDays.size ? '' : 'hidden'}>
+      <label>期限</label>
+      <select id="t-dueafter">${Array.from({ length: 15 }, (_, i) => `<option value="${i}" ${(+t.repeat?.dueAfter || 0) === i ? 'selected' : ''}>${i ? `出た日の${i}日後まで` : '出た日のうちに'}</option>`).join('')}</select>
+      <label>間隔</label>
+      <select id="t-every">${[[1, '毎週'], [2, '隔週（2週に1回）'], [3, '3週ごと'], [4, '4週ごと']].map(([v, l]) => `<option value="${v}" ${(+t.repeat?.every || 1) === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <label>いつまで（空欄なら続きます）</label><input type="date" id="t-until" value="${esc(t.repeat?.until)}">
+      <p class="note">やる時間は決めず、出た日〜期限のあいだの空きに自動で入れます。${t.template ? '' : 'この ToDo は「くり返しの雛形」になります（今日出ている分があれば、そのぶんの ToDo が作られます）。'}</p>
+    </div>`}
     <label>メモ</label><textarea id="t-memo" rows="2">${esc(t.memo)}</textarea>
     ${pl.length ? `<p class="note">配置：${pl.map((e) => `${label(e.date)} ${e.start}–${e.end}`).join('、')}</p>` : ''}
     <div class="acts"><button type="button" class="del" id="t-del">削除</button><button type="button" id="t-cancel">閉じる</button><button type="submit" class="pri">保存</button></div>
   </form>`, (p) => {
     const getC = bindConstraints(p, t);
+    p.querySelectorAll('#t-rep .tg').forEach((b) => (b.onclick = () => {
+      const d = +b.dataset.d;
+      tRepDays.has(d) ? tRepDays.delete(d) : tRepDays.add(d);
+      b.classList.toggle('on', tRepDays.has(d));
+      $('#t-rep-opts', p).hidden = !tRepDays.size;
+    }));
+    const os = $('#t-openseries', p);
+    if (os) os.onclick = () => { closeSheet(); openTodo(t.series); };
     let pri = +t.priority || 2;
     p.querySelectorAll('#t-pri .tg').forEach((b) => (b.onclick = () => { pri = +b.dataset.p; p.querySelectorAll('#t-pri .tg').forEach((x) => x.classList.toggle('on', x === b)); }));
     $('#t-cancel', p).onclick = closeSheet;
@@ -578,13 +631,25 @@ function openTodo(id) {
       closeSheet();
       openHabit(null, { title: $('#t-title', p).value.trim() || t.title, minutes, places: c.places, after: c.after, notBefore: c.notBefore, notAfter: c.notAfter, color: HABIT_COLOR }, t.id);
     };
-    $('#t-del', p).onclick = () => { if (confirm('この ToDo を削除しますか？')) { store.remove('todo', id); closeSheet(); } };
+    $('#t-del', p).onclick = () => { if (confirm(t.template ? 'くり返しの設定を削除しますか？（これから出る分は無くなります。すでに出た ToDo はそのまま残ります）' : 'この ToDo を削除しますか？')) { store.remove('todo', id); closeSheet(); } };
     $('#t-ai', p).onclick = () => { closeSheet(); estimateTodos([{ ...t, title: $('#t-title', p).value.trim() || t.title }]); };
     $('#form', p).onsubmit = (e) => {
       e.preventDefault();
       freshNext = true;
       const minutes = Math.max(0, Math.round((+$('#t-min', p).value || 0) / 5) * 5);
-      store.put('todo', { ...t, title: $('#t-title', p).value.trim(), minutes, due: $('#t-due', p).value, priority: pri, memo: $('#t-memo', p).value, ...getC(), ...(minutes !== +t.minutes ? { estSource: 'manual', estReason: '' } : {}) });
+      const base = { ...t, title: $('#t-title', p).value.trim(), minutes, due: $('#t-due', p).value, priority: pri, memo: $('#t-memo', p).value, ...getC(), ...(minutes !== +t.minutes ? { estSource: 'manual', estReason: '' } : {}) };
+      if (!t.series && tRepDays.size) {
+        // くり返しの雛形にする（この ToDo 自体は配置されなくなり、回ごとの ToDo が出る）
+        const days = [...tRepDays], every = +$('#t-every', p).value || 1, dueAfter = +$('#t-dueafter', p).value || 0;
+        const same = t.template && t.repeat && t.repeat.every === every && [...(t.repeat.days || [])].sort().join() === [...days].sort().join();
+        const repeat = { days, every, dueAfter, until: $('#t-until', p).value || '', count: 0, tz: Intl.DateTimeFormat().resolvedOptions().timeZone };
+        const date = same ? t.date : nextMatching(addDays(logicalToday(), -dueAfter), days); // 今出ている（期限が今日以降の）回も拾う
+        store.put('todo', { ...base, template: true, repeat, date, done: false, due: '', start: '' });
+        spawnRepeatTodos();
+        toast('くり返しの ToDo にしました');
+      } else if (t.template && !tRepDays.size) {
+        store.put('todo', { ...base, template: false, repeat: null, date: '' }); // くり返しをやめて、ふつうの ToDo に戻す
+      } else store.put('todo', base);
       closeSheet();
     };
   });
@@ -895,7 +960,8 @@ $('#tl').addEventListener('touchend', (e) => {
   if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) shift(dx < 0 ? 1 : -1);
 }, { passive: true });
 
-store.onChange(() => {
+store.onChange((src) => {
+  if (src === 'remote') spawnRepeatTodos(); // 別の端末で雛形を作った/変えたときも、この端末で回を出す
   applyTheme();
   scheduleReplan();
   push.scheduleLocal(events(), S());
@@ -906,10 +972,10 @@ sync.onStatus(() => { if (tab === 'settings' && !sheetOpen) render(); });
 let lastDay = logicalToday();
 setInterval(() => {
   const d = logicalToday();
-  if (d !== lastDay) { if (sel === lastDay) sel = d; lastDay = d; purgeDoneTodos(); replan(); }
+  if (d !== lastDay) { if (sel === lastDay) sel = d; lastDay = d; purgeDoneTodos(); spawnRepeatTodos(); replan(); }
   if (!sheetOpen && tab === 'day') render();
 }, 60000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { purgeDoneTodos(); replan(); if (!sheetOpen) render(); } });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { purgeDoneTodos(); spawnRepeatTodos(); replan(); if (!sheetOpen) render(); } });
 
 // ---------------------------------------------------------------- 起動
 if ('serviceWorker' in navigator) {
@@ -926,6 +992,7 @@ if ('serviceWorker' in navigator) {
 }
 applyTheme();
 purgeDoneTodos();
+spawnRepeatTodos();
 replan();
 setTab(tab);
 push.scheduleLocal(events(), S());

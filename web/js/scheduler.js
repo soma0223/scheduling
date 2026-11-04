@@ -228,7 +228,7 @@ export function plan({ events, todos, habits, settings }, now = new Date(), { fr
   const minChunk = Math.max(5, +s.minChunk || 30);
 
   const live = normalizeEvents(expandEvents(events, addDays(today, -3), addDays(lastDay, 3)), s).filter((e) => !e.deleted);
-  const todoMap = new Map(todos.filter((t) => !t.deleted).map((t) => [t.id, t]));
+  const todoMap = new Map(todos.filter((t) => !t.deleted && !t.template).map((t) => [t.id, t])); // くり返しの雛形は配置しない
   const habitMap = new Map(habits.filter((h) => !h.deleted).map((h) => [h.id, h]));
 
   // 確定済みの予定（ここに配置済みブロックを積んでいく）
@@ -385,14 +385,15 @@ export function plan({ events, todos, habits, settings }, now = new Date(), { fr
 
   // --- 3. ToDo：設定した順（手動 or 期限順）に、上のものから空きを埋めていく ---
   let todoList = [...todoMap.values()]
-    .filter((t) => (need.get(t.id) || 0) > 0)
+    .filter((t) => (need.get(t.id) || 0) > 0 && !(t.start && t.start > lastDay)) // まだ出ていない（出る日が配置期間の先）ものは置かない
     .sort(todoCompare(s));
   // 条件つき（場所など）は入れる枠が限られるので先に配置する。条件なしの ToDo が貴重な枠を先に使わないように
   if (String(s.constrainedFirst) !== '0') todoList = [...todoList.filter(hasConstraint), ...todoList.filter((t) => !hasConstraint(t))];
   for (const t of todoList) {
     let rest = need.get(t.id);
-    const before = days.filter((d) => !t.due || d <= t.due);
-    const after = days.filter((d) => t.due && d > t.due);
+    const avail = days.filter((d) => !t.start || d >= t.start); // 出た日より前には置かない
+    const before = avail.filter((d) => !t.due || d <= t.due);
+    const after = avail.filter((d) => t.due && d > t.due);
     const put = (d, a, b) => placed.push(autoEvent('todo', t, d, a, b, `auto-t-${t.id}-${d}-${fm(a).replace(':', '')}`));
 
     const whole = (ds_) => {

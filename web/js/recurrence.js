@@ -36,19 +36,26 @@ export function nextMatching(date, days) {
   return date;
 }
 
+/** 繰り返しの親（date・repeat・skip を持つもの）の、from〜to（含む）に回がある日付の一覧 */
+export function occurrenceDates(base, from, to) {
+  const out = [];
+  const skip = new Set(base.skip || []);
+  const lastByCount = lastDateByCount(base);
+  const until = [base.repeat.until, lastByCount].filter(Boolean).sort()[0] || ''; // 日付と回数の早いほうで終わり
+  for (let d = from > base.date ? from : base.date; d <= to; d = addDays(d, 1)) {
+    if (until && d > until) break;
+    if (!matches(base, d) || skip.has(d)) continue;
+    out.push(d);
+  }
+  return out;
+}
+
 /** 繰り返しの親を、from〜to（含む）の各回に展開する。それ以外の予定はそのまま通す */
 export function expandEvents(list, from, to) {
   const out = [];
   for (const e of list) {
     if (!isRecurring(e) || e.deleted) { out.push(e); continue; }
-    const skip = new Set(e.skip || []);
-    const lastByCount = lastDateByCount(e);
-    const until = [e.repeat.until, lastByCount].filter(Boolean).sort()[0] || ''; // 日付と回数の早いほうで終わり
-    for (let d = from > e.date ? from : e.date; d <= to; d = addDays(d, 1)) {
-      if (until && d > until) break;
-      if (!matches(e, d) || skip.has(d)) continue;
-      out.push({ ...e, id: `${e.id}@${d}`, date: d, series: e.id });
-    }
+    for (const d of occurrenceDates(e, from, to)) out.push({ ...e, id: `${e.id}@${d}`, date: d, series: e.id });
   }
   return out;
 }
@@ -60,4 +67,34 @@ export function describeRepeat(rep, WD) {
   const every = ev === 1 ? '毎週' : ev === 2 ? '隔週' : `${ev}週ごと`;
   const days = order.length === 7 && ev === 1 ? '毎日' : `${every} ${order.map((d) => WD[d]).join('・')}`;
   return days + (+rep.count > 0 ? `（全${Math.round(+rep.count)}回）` : rep.until ? `（${rep.until}まで）` : '');
+}
+
+// ---- くり返しの ToDo（例：毎週水曜に出る課題を、木曜までにやる）----
+//  雛形（template:true, repeat:{days, every, until, count, dueAfter}）から、回ごとに通常の ToDo を1件ずつ作る。
+//  各回は start（出た日）〜 due（出た日の dueAfter 日後）のあいだの空きに自動配置される。
+
+export const isTodoTemplate = (t) => !!(t && t.template && t.repeat && Array.isArray(t.repeat.days) && t.repeat.days.length);
+
+/** 雛形から、今日（today）〜 last に出る回の ToDo を作る。すでに期限が過ぎた回は作らない */
+export function repeatTodoInstances(tpl, today, last) {
+  if (!isTodoTemplate(tpl)) return [];
+  const after = Math.max(0, Math.min(30, Math.round(+tpl.repeat.dueAfter || 0)));
+  const out = [];
+  for (const d of occurrenceDates(tpl, addDays(today, -after), last)) {
+    const due = addDays(d, after);
+    if (due < today) continue;
+    out.push({
+      id: `${tpl.id}@${d}`, series: tpl.id, title: tpl.title, minutes: tpl.minutes, priority: tpl.priority || 2,
+      memo: tpl.memo || '', places: tpl.places || [], after: tpl.after || null, notBefore: tpl.notBefore || '', notAfter: tpl.notAfter || '',
+      estSource: tpl.estSource, estReason: tpl.estReason, start: d, due, done: false, createdAt: d,
+      order: Date.parse(d + 'T12:00:00Z'), // 出た順（先に出たものが上）
+    });
+  }
+  return out;
+}
+
+/** 「毎週 水 → 期限は出た日の1日後」のような説明 */
+export function describeTodoRepeat(rep, WD) {
+  const after = Math.round(+rep.dueAfter || 0);
+  return `${describeRepeat(rep, WD)} → 期限は${after ? `出た日の${after}日後` : '出た日のうち'}`;
 }
