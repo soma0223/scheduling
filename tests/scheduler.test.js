@@ -4,7 +4,7 @@ import { freeSlots, plan, gaps, busyIntervals, DEFAULT_SETTINGS } from '../web/j
 
 // 2026-11-02 は月曜
 const NOW = new Date(2026, 10, 2, 8, 0);
-const S = { ...DEFAULT_SETTINGS };
+const S = { ...DEFAULT_SETTINGS, todoMaxPerDay: '0', todoGap: '0' }; // 既存テストは「上限なし・あけなし」で確認（新しい設定は専用テストで）
 const ev = (id, date, start, end, extra = {}) => ({ id, title: id, date, start, end, color: '#000', ...extra });
 
 test('gaps: 区間の隙間を返す', () => {
@@ -281,7 +281,7 @@ test('活動時間: 保存されたフラグと食い違っても、終了が開
 
 // ---- 移動（ルート・手段）----
 import { travelSegments } from '../web/js/constraints.js';
-const TS = { ...DEFAULT_SETTINGS, home: '家', places: [{ name: '家' }, { name: '学校' }, { name: 'ジム' }],
+const TS = { ...DEFAULT_SETTINGS, todoMaxPerDay: '0', todoGap: '0', home: '家', places: [{ name: '家' }, { name: '学校' }, { name: 'ジム' }],
   modes: [{ name: '徒歩', work: false }, { name: '電車', work: true }],
   routes: [{ from: '家', to: '学校', minutes: 40, mode: '電車' }, { from: '学校', to: 'ジム', minutes: 15, mode: '徒歩' }],
   dayStart: '07:00', dayEnd: '23:00', horizon: 1 };
@@ -593,4 +593,42 @@ test('時間帯の好み: 時間帯を決めない習慣にも効く', () => {
   const h = [{ id: 'h', title: 'H', days: [1], minutes: 30, anytime: true, prefer: 'evening' }];
   const r = plan({ events: PE, todos: [], habits: h, settings: PS }, PN);
   assert.deepEqual(r.upserts.map((e) => e.start), ['18:00']);
+});
+
+// ---- 詰め込みすぎ防止（1日の上限・前後のあき）----
+const CS = { ...S, dayStart: '08:00', dayEnd: '20:00', horizon: 3 };
+const CN = new Date(2026, 10, 2, 6, 0);
+const perDay = (r) => { const m = {}; for (const e of r.upserts.filter((x) => x.kind === 'todo')) m[e.date] = (m[e.date] || 0) + toMin(e.end) - toMin(e.start); return m; };
+
+test('1日の上限: 超える分は次の日に回る（上限なしなら全部その日に入る）', () => {
+  const todos = [{ id: 'a', title: 'A', minutes: 120, order: 1 }, { id: 'b', title: 'B', minutes: 120, order: 2 }, { id: 'c', title: 'C', minutes: 120, order: 3 }];
+  const free = plan({ events: [], todos, habits: [], settings: CS }, CN);
+  assert.deepEqual(perDay(free), { '2026-11-02': 360 });
+  const capped = plan({ events: [], todos, habits: [], settings: { ...CS, todoMaxPerDay: '240' } }, CN);
+  assert.deepEqual(perDay(capped), { '2026-11-02': 240, '2026-11-03': 120 });
+  assert.deepEqual(capped.unplaced.todos, []);
+  // 冪等
+  assert.deepEqual(plan({ events: capped.upserts, todos, habits: [], settings: { ...CS, todoMaxPerDay: '240' } }, CN).upserts, []);
+});
+
+test('1日の上限: 長いToDoは上限で分割して次の日へ／期限のあるものは上限を超えても期限内に入れる', () => {
+  const s = { ...CS, todoMaxPerDay: '180', minChunk: 30 };
+  const big = plan({ events: [], todos: [{ id: 'x', title: 'X', minutes: 300 }], habits: [], settings: s }, CN);
+  assert.deepEqual(perDay(big), { '2026-11-02': 180, '2026-11-03': 120 });
+  // 期限が今日の 4 時間ToDo は、上限(3h)を超えても今日に入れる
+  const due = plan({ events: [], todos: [{ id: 'd', title: 'D', minutes: 240, due: '2026-11-02' }], habits: [], settings: s }, CN);
+  assert.deepEqual(perDay(due), { '2026-11-02': 240 });
+  // 期限なしなら上限のとおり（上限より長いものは分割）。上限0は制限なし
+  assert.deepEqual(perDay(plan({ events: [], todos: [{ id: 'n', title: 'N', minutes: 240 }], habits: [], settings: s }, CN)), { '2026-11-02': 180, '2026-11-03': 60 });
+  assert.deepEqual(perDay(plan({ events: [], todos: [{ id: 'n', title: 'N', minutes: 240 }], habits: [], settings: { ...s, todoMaxPerDay: '0' } }, CN)), { '2026-11-02': 240 });
+});
+
+test('前後のあき: ToDo どうしがくっつかない。空き時間の表示にも反映される', () => {
+  const s = { ...CS, todoGap: '15', placeStyle: 'early' };
+  const todos = [{ id: 'a', title: 'A', minutes: 60, order: 1 }, { id: 'b', title: 'B', minutes: 60, order: 2 }];
+  const r = plan({ events: [], todos, habits: [], settings: s }, CN);
+  assert.deepEqual([slot(r, 'a'), slot(r, 'b')], [['08:00-09:00'], ['09:15-10:15']]); // 間に 15 分
+  assert.deepEqual(plan({ events: r.upserts, todos, habits: [], settings: s }, CN).upserts, []);
+  // 空き時間表示: ToDo の前後 15 分ぶんは空きに数えない
+  assert.deepEqual(fs2(r.upserts, '2026-11-02', s, CN), [[10 * 60 + 30, 20 * 60]]);
 });

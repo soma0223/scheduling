@@ -23,6 +23,8 @@ export const DEFAULT_SETTINGS = {
   routes: [], // 移動ルート [{from, to, minutes, mode}]（行きも帰りも同じ）
   home: '家', // 予定のない時間にいる場所
   constrainedFirst: '1', // 場所などの条件があるものを先に配置する（'1'=する）
+  todoMaxPerDay: '180', // 1日に ToDo を入れる上限（分。'0'=制限なし）。期限のあるものは期限に間に合わせるため超えて入れる
+  todoGap: '10', // 自動配置した ToDo の前後にあける時間（分）
   placeStyle: 'fit', // ToDo を入れる隙間の選び方: 'fit'=ちょうど収まる隙間 / 'early'=早い時間から詰める。優先度は「取り合い」にだけ使う
   doneKeepDays: '3', // 完了した ToDo を何日あとに自動で消すか（'never'=消さない）
   todoOrder: 'manual', // ToDo の割り振り順: 'manual'=手動の並び順 / 'due'=期限が近い順→優先度
@@ -93,7 +95,9 @@ export function busyIntervals(events, date, s) {
     .filter((e) => timed(e) && e.date === date)
     .map((e) => {
       const a = toM(e.start), b = toM(e.end);
-      return e.auto || e.virtual ? [a, b] : [a - (+s.bufferBefore || 0), b + (+s.bufferAfter || 0)];
+      if (e.auto) { const g = e.kind === 'todo' ? +s.todoGap || 0 : 0; return [a - g, b + g]; } // ToDo どうし・予定との間にひと息あける
+    if (e.virtual) return [a, b];
+    return [a - (+s.bufferBefore || 0), b + (+s.bufferAfter || 0)];
     })
     .sort((x, y) => x[0] - y[0]);
   const out = [];
@@ -241,6 +245,7 @@ export function plan({ events, todos, habits, settings }, now = new Date(), { fr
   const lastDay = days[days.length - 1];
   const { ds, de } = dayBounds(s);
   const minChunk = Math.max(5, +s.minChunk || 30);
+  const cap = Math.max(0, +s.todoMaxPerDay || 0);
 
   const live = normalizeEvents(expandEvents(events, addDays(today, -3), addDays(lastDay, 3)), s).filter((e) => !e.deleted);
   const todoMap = new Map(todos.filter((t) => !t.deleted && !t.template).map((t) => [t.id, t])); // くり返しの雛形は配置しない
@@ -413,9 +418,13 @@ export function plan({ events, todos, habits, settings }, now = new Date(), { fr
 
     const style = s.placeStyle === 'early' ? 'early' : 'fit';
     const w = preferWindow(t.prefer, ds, de);
+    // その日に入れた ToDo の合計（開始済み・固定のものも含む）。上限に達した日には、これ以上入れない
+    let capOn = cap > 0;
+    const capLeft = (d) => (capOn ? cap - [...keep, ...placed].filter((x) => x.kind === 'todo' && x.date === d).reduce((a, x) => a + toM(x.end) - toM(x.start), 0) : Infinity);
     // その日の中で、好みの時間帯 → どこでも の順に探す
     const whole = (ds_) => {
       for (const d of ds_) {
+        if (capLeft(d) < rest) continue;
         const g = (w && pickGap(cand(t, d, w[0], w[1]), rest, style)) || pickGap(cand(t, d, ds, de), rest, style);
         if (g) { put(d, g[0], g[0] + rest); rest = 0; return true; }
       }
@@ -426,7 +435,9 @@ export function plan({ events, todos, habits, settings }, now = new Date(), { fr
         for (const range of w ? [w, [ds, de]] : [[ds, de]]) {
           for (const [a, b] of cand(t, d, range[0], range[1])) {
             if (rest <= 0) return;
-            let len = Math.min(b - a, rest);
+            const left = capLeft(d);
+            if (left < Math.min(minChunk, rest)) break;
+            let len = Math.min(b - a, rest, left);
             if (len < rest && rest - len < minChunk) len = rest - minChunk; // 端数を残さない
             if (len < Math.min(minChunk, rest)) continue;
             put(d, a, a + len);
@@ -436,6 +447,8 @@ export function plan({ events, todos, habits, settings }, now = new Date(), { fr
       }
     };
     if (!whole(before)) split(before);
+    // 期限のあるものは、上限に達した日でも、期限に間に合うよう期限内に入れる
+    if (rest > 0 && t.due && cap > 0) { capOn = false; if (!whole(before)) split(before); capOn = true; }
     if (rest > 0 && !whole(after)) split(after);
     if (rest > 0) unplaced.todos.push({ id: t.id, minutes: rest });
   }

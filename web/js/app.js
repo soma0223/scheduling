@@ -555,7 +555,7 @@ function renderTodos() {
       const pl = placementOf(t.id);
       const un = unplaced.todos.find((u) => u.id === t.id);
       if (pl.length) m.append(el('span', 'ok', '→ ' + pl.map((e) => `${label(e.date)} ${e.start}`).join(', ')));
-      if (un) m.append(el('span', 'ng', `⚠ ${dur(un.minutes)}ぶん${hasConstraint(t) ? '条件に合う空きがありません' : '空きが足りません'}`));
+      if (un) m.append(el('span', 'ng', `⚠ ${dur(un.minutes)}ぶん${hasConstraint(t) ? '条件に合う空きがありません' : +S().todoMaxPerDay > 0 ? '入りきりません（空き・1日の上限）' : '空きが足りません'}`));
     }
     main.append(m);
     main.onclick = () => openTodo(t.id);
@@ -855,6 +855,8 @@ async function renderSettings() {
     <h2>自動配置</h2>
     <div class="srow"><span>ToDo を分割する最小単位</span><input type="number" min="5" max="240" step="5" data-k="minChunk" value="${s.minChunk}">分</div>
     <div class="srow"><span>条件つきを先に入れる<small>場所などの条件があるものは入れる枠が限られるので、先に配置します</small></span><select data-k="constrainedFirst"><option value="1">先に入れる</option><option value="0">並び順どおり</option></select></div>
+    <div class="srow"><span>1日に入れる ToDo の上限<small>これを超える分は次の日以降に回します。期限があるものは、間に合うよう超えて入れます</small></span><select data-k="todoMaxPerDay"><option value="0">制限なし</option>${[60, 120, 180, 240, 360, 480].map((m) => `<option value="${m}">${m / 60}時間まで</option>`).join('')}</select></div>
+    <div class="srow"><span>ToDo の前後にあける時間<small>ToDo どうしや予定とくっつかないようにします</small></span><select data-k="todoGap">${[0, 5, 10, 15, 30].map((m) => `<option value="${m}">${m ? m + '分' : 'あけない'}</option>`).join('')}</select></div>
     <div class="srow"><span>ToDo を入れる隙間<small>優先度は「空きが足りないとき、誰が先に枠を取るか」にだけ使います。時間の早い遅いは決めません</small></span><select data-k="placeStyle"><option value="fit">ちょうど収まる隙間</option><option value="early">早い時間から詰める</option></select></div>
     <div class="srow"><span>ToDo を入れる順番<small>手動：ToDo 画面の ▲▼ で並べた順</small></span><select data-k="todoOrder"><option value="manual">手動の順番</option><option value="due">期限が近い順</option></select></div>
     <div class="srow"><span>完了した ToDo を自動で消す<small>完了してから、この日数がたったら削除します</small></span><select data-k="doneKeepDays"><option value="1">1日後</option><option value="3">3日後</option><option value="7">7日後</option><option value="30">30日後</option><option value="never">消さない</option></select></div>
@@ -908,6 +910,8 @@ async function renderSettings() {
   box.querySelector('select[data-k=todoOrder]').value = s.todoOrder || 'manual';
   box.querySelector('select[data-k=constrainedFirst]').value = String(s.constrainedFirst) === '0' ? '0' : '1';
   box.querySelector('select[data-k=home]').value = s.home || '家';
+  box.querySelector('select[data-k=todoMaxPerDay]').value = String(s.todoMaxPerDay ?? '180');
+  box.querySelector('select[data-k=todoGap]').value = String(s.todoGap ?? '10');
   box.querySelector('select[data-k=placeStyle]').value = s.placeStyle === 'early' ? 'early' : 'fit';
   box.querySelector('select[data-k=doneKeepDays]').value = String(s.doneKeepDays ?? '3');
   box.querySelectorAll('[data-pt]').forEach((c) => (c.onchange = () => store.setSettings({ places: S().places.map((p, i) => (i === +c.dataset.pt ? { ...p, transit: c.checked } : p)) })));
@@ -960,7 +964,7 @@ async function renderSettings() {
       extra = { dayEndNext: toM(b) <= toM(a) }; // 終了が開始以前なら翌日まで
       freshNext = true;
     }
-    if (k === 'todoOrder' || k === 'constrainedFirst' || k === 'placeStyle') freshNext = true;
+    if (k === 'todoOrder' || k === 'constrainedFirst' || k === 'placeStyle' || k === 'todoMaxPerDay' || k === 'todoGap') freshNext = true;
     store.setSettings({ [k]: v, ...extra });
     if (k === 'theme') applyTheme();
     };
