@@ -298,6 +298,7 @@ function openEvent(id, s, e) {
   const [sid, inst] = id ? String(id).split('@') : [null, null];
   const x = sid ? store.get('event', sid) : null;
   const repDays = new Set(x?.repeat?.days || []);
+  let endMode = +x?.repeat?.count > 0 ? 'count' : x?.repeat?.until ? 'until' : '';
   // 空き枠から追加するとき：論理日の分(24:00以降あり) → 実際の日付・時刻。24:00 をまたぐ場合は 24:00 で切る
   let nDate = sel;
   if (s !== undefined) {
@@ -332,7 +333,14 @@ function openEvent(id, s, e) {
     </div>
     <label>繰り返し（曜日を選ぶと、毎週その曜日に入ります）</label>
     <div class="toggles" id="f-rep">${[1, 2, 3, 4, 5, 6, 0].map((d) => `<button type="button" class="tg ${repDays.has(d) ? 'on' : ''}" data-d="${d}">${WD[d]}</button>`).join('')}</div>
-    <div id="f-until-wrap" ${repDays.size ? '' : 'hidden'}><label>いつまで（空欄なら続きます）</label><input type="date" id="f-until" value="${esc(x?.repeat?.until)}"></div>
+    <div id="f-until-wrap" ${repDays.size ? '' : 'hidden'}>
+      <label>間隔</label>
+      <select id="f-every">${[[1, '毎週'], [2, '隔週（2週に1回）'], [3, '3週ごと'], [4, '4週ごと']].map(([v, l]) => `<option value="${v}" ${(+x?.repeat?.every || 1) === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <label>終わり</label>
+      <div class="toggles" id="f-endmode">${[['', 'ずっと'], ['until', '日付まで'], ['count', '回数まで']].map(([v, l]) => `<button type="button" class="tg ${endMode === v ? 'on' : ''}" data-v="${v}">${l}</button>`).join('')}</div>
+      <div id="f-end-until" ${endMode === 'until' ? '' : 'hidden'} style="margin-top:8px"><input type="date" id="f-until" value="${esc(x?.repeat?.until)}"></div>
+      <div id="f-end-count" ${endMode === 'count' ? '' : 'hidden'} style="margin-top:8px"><div class="row" style="align-items:center"><div style="flex:none;width:90px"><input type="number" id="f-count" min="1" max="500" step="1" value="${+x?.repeat?.count || 10}"></div><div>回で終わる（「この日だけ削除」した回も数えます）</div></div></div>
+    </div>
     <label>メモ（時間を空欄にすると「時間なし」の予定）</label><textarea id="f-memo" rows="2">${esc(x?.memo)}</textarea>
     <label>色</label>${colorPicker(x?.color || COLORS[0], x?.color ? [x.color] : [])}`}
     <div class="acts">
@@ -345,6 +353,12 @@ function openEvent(id, s, e) {
       repDays.has(d) ? repDays.delete(d) : repDays.add(d);
       b.classList.toggle('on', repDays.has(d));
       $('#f-until-wrap', p).hidden = !repDays.size;
+    }));
+    p.querySelectorAll('#f-endmode .tg').forEach((b) => (b.onclick = () => {
+      endMode = b.dataset.v;
+      p.querySelectorAll('#f-endmode .tg').forEach((t) => t.classList.toggle('on', t === b));
+      $('#f-end-until', p).hidden = endMode !== 'until';
+      $('#f-end-count', p).hidden = endMode !== 'count';
     }));
     const skipDay = $('#f-skipday', p);
     if (skipDay) skipDay.onclick = () => { store.put('event', { ...x, skip: [...new Set([...(x.skip || []), inst])] }); closeSheet(); toast('この日だけ削除しました'); };
@@ -392,9 +406,12 @@ function openEvent(id, s, e) {
       } else {
         if (repDays.size && !st) return toast('繰り返しの予定には時間が必要です');
         const rd = [...repDays];
-        const until = $('#f-until', p).value;
+        const until = endMode === 'until' ? $('#f-until', p).value : '';
+        const count = endMode === 'count' ? Math.max(1, Math.round(+$('#f-count', p).value || 1)) : 0;
+        if (rd.length && endMode === 'until' && !until) return toast('終わりの日付を入れてください');
+        if (rd.length && until && until < nextMatching(date, rd)) return toast('終わりの日付が、最初の回より前です');
         const o = { title: $('#f-title', p).value.trim(), date: rd.length ? nextMatching(date, rd) : date, start: st, end: en,
-          repeat: rd.length ? { days: rd, until, tz: Intl.DateTimeFormat().resolvedOptions().timeZone } : null, skip: rd.length ? (x?.skip || []) : [], memo: $('#f-memo', p).value, place: $('#f-place', p).value === '__new__' ? '' : $('#f-place', p).value, travel: readTravel(p), travelAfter: readTravel(p, 'f-hmode', 'f-hmin'), color: $('input[name=c]:checked', p)?.value || COLORS[0] };
+          repeat: rd.length ? { days: rd, every: +$('#f-every', p).value || 1, until, count, tz: Intl.DateTimeFormat().resolvedOptions().timeZone } : null, skip: rd.length ? (x?.skip || []) : [], memo: $('#f-memo', p).value, place: $('#f-place', p).value === '__new__' ? '' : $('#f-place', p).value, travel: readTravel(p), travelAfter: readTravel(p, 'f-hmode', 'f-hmin'), color: $('input[name=c]:checked', p)?.value || COLORS[0] };
         store.put('event', { id: x?.id || uid(), ...o });
       }
       if (!(x && x.repeat && repDays.size)) sel = normalizeEvent({ date: x?.auto ? date : repDays.size ? nextMatching(date, [...repDays]) : date, start: st, end: en }, S()).date; // 深夜の予定は前日の夜として表示

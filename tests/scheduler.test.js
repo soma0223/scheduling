@@ -482,3 +482,32 @@ test('帰宅: 帰宅の移動が終わってから家のToDoが入る。冪等',
   assert.deepEqual(slot(r, 'h'), ['15:25-15:55']);
   assert.deepEqual(plan({ events: [e, ...r.upserts], todos, habits: [], settings: TH }, now).upserts, []);
 });
+
+// ---- 隔週・いつまで・何回 ----
+test('繰り返し: 隔週（親の日付の週を基準に、2週おき）', () => {
+  const m = ev('b', '2026-11-02', '10:00', '11:00', { repeat: { days: [1, 3], every: 2 } }); // 月・水を隔週
+  assert.deepEqual(expandEvents([m], '2026-11-01', '2026-11-30').map((e) => e.date),
+    ['2026-11-02', '2026-11-04', '2026-11-16', '2026-11-18', '2026-11-30']);
+  // 開始日が週の途中でも、その週が基準（11/4 水 → 11/4, 11/16, 11/18…）
+  const m2 = { ...m, date: '2026-11-04' };
+  assert.deepEqual(expandEvents([m2], '2026-11-01', '2026-11-20').map((e) => e.date), ['2026-11-04', '2026-11-16', '2026-11-18']);
+});
+
+test('繰り返し: 回数で終わる／日付で終わる／早いほうが優先／スキップした回も回数に数える', () => {
+  const base = ev('c', '2026-11-02', '10:00', '11:00');
+  const dates = (rep, extra = {}) => expandEvents([{ ...base, repeat: rep, ...extra }], '2026-10-01', '2027-03-01').map((e) => e.date);
+  assert.deepEqual(dates({ days: [1, 3], count: 3 }), ['2026-11-02', '2026-11-04', '2026-11-09']);
+  assert.deepEqual(dates({ days: [1], every: 2, count: 3 }), ['2026-11-02', '2026-11-16', '2026-11-30']);
+  assert.deepEqual(dates({ days: [1, 3], until: '2026-11-05' }), ['2026-11-02', '2026-11-04']);
+  assert.deepEqual(dates({ days: [1, 3], until: '2026-12-31', count: 2 }), ['2026-11-02', '2026-11-04']); // 回数のほうが早い
+  assert.deepEqual(dates({ days: [1, 3], count: 3 }, { skip: ['2026-11-04'] }), ['2026-11-02', '2026-11-09']); // 11/4 は消したが3回目は 11/9 のまま
+  // 見ている期間が先でも、回数は親の日付から数える
+  assert.deepEqual(expandEvents([{ ...base, repeat: { days: [1], count: 2 } }], '2026-11-09', '2026-12-31').map((e) => e.date), ['2026-11-09']);
+});
+
+test('繰り返し: 隔週の予定は、空きの計算にも隔週で効く', () => {
+  const m = ev('b', '2026-11-02', '10:00', '11:00', { repeat: { days: [1], every: 2 } });
+  const now = new Date(2026, 10, 1, 6, 0);
+  assert.deepEqual(fs2([m], '2026-11-09', S, now), [[7 * 60, 23 * 60]]); // 隔週なので 11/9 は無し
+  assert.deepEqual(fs2([m], '2026-11-16', S, now), [[7 * 60, 10 * 60], [11 * 60, 23 * 60]]);
+});
