@@ -404,35 +404,53 @@ export function plan({ events, todos, habits, settings }, now = new Date(), { fr
   }
 
   // --- 3. ToDo：設定した順（手動 or 期限順）に、上のものから空きを埋めていく ---
-  let todoList = [...todoMap.values()]
-    .filter((t) => (need.get(t.id) || 0) > 0 && !(t.start && t.start > lastDay)) // まだ出ていない（出る日が配置期間の先）ものは置かない
+  // 手動の並び順のときは「時刻も並び順どおり」にする：条件のない ToDo は、直前の ToDo の枠より後に入れる（cursor）。
+  // 場所・時刻・好みの条件があるものは条件を優先して独立に入れる。期限に間に合わない・並び順の場所に入らないときは、空いているところに入れる。
+  const strict = s.todoOrder !== 'due';
+  const isOrd = (t) => strict && !hasConstraint(t) && !t.prefer;
+  let fullList = [...todoMap.values()]
+    .filter((t) => need.has(t.id) && !(t.start && t.start > lastDay)) // まだ出ていない（出る日が配置期間の先）ものは置かない
     .sort(todoCompare(s));
   // 条件つき（場所など）は入れる枠が限られるので先に配置する。条件なしの ToDo が貴重な枠を先に使わないように
-  if (String(s.constrainedFirst) !== '0') todoList = [...todoList.filter(hasConstraint), ...todoList.filter((t) => !hasConstraint(t))];
-  for (const t of todoList) {
+  if (String(s.constrainedFirst) !== '0') fullList = [...fullList.filter(hasConstraint), ...fullList.filter((t) => !hasConstraint(t))];
+  const cur = { d: '', m: 0 }; // 並び順どおりに入れた最後の ToDo の枠の終わり
+  const bump = (d, m) => { if (!cur.d || d > cur.d || (d === cur.d && m > cur.m)) { cur.d = d; cur.m = m; } };
+  for (const t of fullList) {
+    const ord = isOrd(t);
+    if (!(need.get(t.id) > 0)) {
+      // すでに枠がある（動かさない）ToDo：並び順の基準として、その枠の終わりを覚える
+      if (ord) for (const k of keep) if (k.kind === 'todo' && k.ref === t.id) bump(k.date, toM(k.end));
+      continue;
+    }
     let rest = need.get(t.id);
+    const mine = placed.length;
     const avail = days.filter((d) => !t.start || d >= t.start); // 出た日より前には置かない
     const before = avail.filter((d) => !t.due || d <= t.due);
     const after = avail.filter((d) => t.due && d > t.due);
     const put = (d, a, b) => placed.push(autoEvent('todo', t, d, a, b, `auto-t-${t.id}-${d}-${fm(a).replace(':', '')}`));
 
-    const style = s.placeStyle === 'early' ? 'early' : 'fit';
+    const style = strict ? 'early' : s.placeStyle === 'early' ? 'early' : 'fit';
     const w = preferWindow(t.prefer, ds, de);
+    let capOn = cap > 0, cursorOn = ord;
     // その日に入れた ToDo の合計（開始済み・固定のものも含む）。上限に達した日には、これ以上入れない
-    let capOn = cap > 0;
     const capLeft = (d) => (capOn ? cap - [...keep, ...placed].filter((x) => x.kind === 'todo' && x.date === d).reduce((a, x) => a + toM(x.end) - toM(x.start), 0) : Infinity);
+    // その日に入れてよい最も早い時刻（並び順の基準より前には入れない）
+    const lo = (d) => (cursorOn && cur.d ? (d < cur.d ? de : d === cur.d ? Math.max(ds, cur.m) : ds) : ds);
     // その日の中で、好みの時間帯 → どこでも の順に探す
     const whole = (ds_) => {
       for (const d of ds_) {
-        if (capLeft(d) < rest) continue;
-        const g = (w && pickGap(cand(t, d, w[0], w[1]), rest, style)) || pickGap(cand(t, d, ds, de), rest, style);
+        const L = lo(d);
+        if (L >= de || capLeft(d) < rest) continue;
+        const g = (w && pickGap(cand(t, d, Math.max(L, w[0]), w[1]), rest, style)) || pickGap(cand(t, d, L, de), rest, style);
         if (g) { put(d, g[0], g[0] + rest); rest = 0; return true; }
       }
       return false;
     };
     const split = (ds_) => {
       for (const d of ds_) {
-        for (const range of w ? [w, [ds, de]] : [[ds, de]]) {
+        const L = lo(d);
+        if (L >= de) continue;
+        for (const range of w ? [[Math.max(L, w[0]), w[1]], [L, de]] : [[L, de]]) {
           for (const [a, b] of cand(t, d, range[0], range[1])) {
             if (rest <= 0) return;
             const left = capLeft(d);
@@ -446,11 +464,18 @@ export function plan({ events, todos, habits, settings }, now = new Date(), { fr
         }
       }
     };
-    if (!whole(before)) split(before);
-    // 期限のあるものは、上限に達した日でも、期限に間に合うよう期限内に入れる
-    if (rest > 0 && t.due && cap > 0) { capOn = false; if (!whole(before)) split(before); capOn = true; }
-    if (rest > 0 && !whole(after)) split(after);
+    // 試す順：[並び順どおり → 外れてもよい] × [1日の上限を守る → 期限のあるものは上限を超えても期限内に]、期限内→期限のあと
+    const cursors = ord ? [true, false] : [false];
+    const steps = [];
+    for (const c of cursors) for (const cp of t.due && cap > 0 ? [true, false] : [true]) steps.push({ days: before, c, cp });
+    for (const c of cursors) steps.push({ days: after, c, cp: true });
+    for (const st of steps) {
+      if (rest <= 0) break;
+      cursorOn = st.c; capOn = cap > 0 && st.cp;
+      if (!whole(st.days)) split(st.days);
+    }
     if (rest > 0) unplaced.todos.push({ id: t.id, minutes: rest });
+    if (ord) for (const x of placed.slice(mine)) bump(x.date, toM(x.end));
   }
 
   // --- 4. 差分 ---

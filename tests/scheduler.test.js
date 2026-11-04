@@ -549,7 +549,7 @@ test('くり返しToDo: 出た日〜期限のあいだの空きにだけ入る�
 });
 
 // ---- 時間帯の好み・入れ方（優先度は取り合いにだけ使う）----
-const PS = { ...S, dayStart: '08:00', dayEnd: '22:00', horizon: 1 };
+const PS = { ...S, dayStart: '08:00', dayEnd: '22:00', horizon: 1, todoOrder: 'due' }; // 「ちょうど収まる隙間」は期限順のときの選び方（手動の並び順では上から順に入れる）
 const PN = new Date(2026, 10, 2, 6, 0);
 // 空き: 08:00-09:00(1h) / 10:00-13:00(3h) / 14:00-22:00(8h)
 const PE = [ev('a', '2026-11-02', '09:00', '10:00'), ev('b', '2026-11-02', '13:00', '14:00')];
@@ -631,4 +631,57 @@ test('前後のあき: ToDo どうしがくっつかない。空き時間の表�
   assert.deepEqual(plan({ events: r.upserts, todos, habits: [], settings: s }, CN).upserts, []);
   // 空き時間表示: ToDo の前後 15 分ぶんは空きに数えない
   assert.deepEqual(fs2(r.upserts, '2026-11-02', s, CN), [[10 * 60 + 30, 20 * 60]]);
+});
+
+// ---- 並び順どおりに入る（手動の並び順）----
+const OS = { ...S, dayStart: '08:00', dayEnd: '20:00', horizon: 3, todoOrder: 'manual' };
+const ON = new Date(2026, 10, 2, 6, 0);
+const tl = (r) => r.upserts.filter((e) => e.kind === 'todo').sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start)).map((e) => e.ref).join('>');
+// 空き: 08:00-09:00(1h) / 10:00-13:00(3h) / 14:00-20:00(6h)
+const OE = [ev('a', '2026-11-02', '09:00', '10:00'), ev('b', '2026-11-02', '13:00', '14:00')];
+
+test('並び順どおり: 上のToDoほど時刻も先。小さい隙間に後ろのToDoが先回りしない', () => {
+  const todos = [{ id: 'a', title: 'A', minutes: 120, order: 1 }, { id: 'b', title: 'B', minutes: 30, order: 2 }, { id: 'c', title: 'C', minutes: 60, order: 3 }];
+  const r = plan({ events: OE, todos, habits: [], settings: OS }, ON);
+  assert.equal(tl(r), 'a>b>c');
+  // A(2h)は 1h の隙間に入らず 10:00-12:00。B はその後ろ、C(1h) は 12:30-13:00 の 30 分に入らないので 14:00-
+  assert.deepEqual([slot(r, 'a'), slot(r, 'b'), slot(r, 'c')], [['10:00-12:00'], ['12:00-12:30'], ['14:00-15:00']]);
+});
+
+test('並び順どおり: 順番を入れ替えて再配置（fresh）すると時刻も入れ替わる。冪等', () => {
+  const t1 = [{ id: 'a', title: 'A', minutes: 60, order: 1 }, { id: 'b', title: 'B', minutes: 60, order: 2 }];
+  const r1 = plan({ events: [], todos: t1, habits: [], settings: OS }, ON);
+  assert.equal(tl(r1), 'a>b');
+  assert.deepEqual(plan({ events: r1.upserts, todos: t1, habits: [], settings: OS }, ON).upserts, []);
+  const t2 = [{ ...t1[0], order: 2 }, { ...t1[1], order: 1 }];
+  const r2 = plan({ events: r1.upserts, todos: t2, habits: [], settings: OS }, ON, { fresh: true });
+  assert.equal(tl({ upserts: r2.upserts }), 'b>a');
+  // 新しく足した ToDo（並びの最後）は、すでにあるものの後ろに入る
+  const t3 = [...t1, { id: 'c', title: 'C', minutes: 30, order: 3 }];
+  const r3 = plan({ events: r1.upserts, todos: t3, habits: [], settings: OS }, ON);
+  assert.equal(slot(r3, 'c')[0] > slot({ upserts: r1.upserts }, 'b')[0], true);
+});
+
+test('並び順どおり: 条件つき・好みつきは独立。期限に間に合わないときは期限を優先', () => {
+  const todos = [
+    { id: 'a', title: 'A', minutes: 60, order: 1 },
+    { id: 'n', title: '夜', minutes: 60, order: 2, prefer: 'evening' }, // 好みつき: 並び順の基準にしない
+    { id: 'b', title: 'B', minutes: 60, order: 3 },
+  ];
+  const r = plan({ events: [], todos, habits: [], settings: { ...OS, constrainedFirst: '0' } }, ON);
+  assert.deepEqual([slot(r, 'a'), slot(r, 'b'), slot(r, 'n')], [['08:00-09:00'], ['09:00-10:00'], ['18:00-19:00']]);
+  // 期限が今日の 3 番目のToDo：並び順では先の ToDo が今日を埋めても、期限内（今日）に入れる
+  const s2 = { ...OS, dayEnd: '10:00', horizon: 2 };
+  const t2 = [{ id: 'a', title: 'A', minutes: 60, order: 1 }, { id: 'd', title: 'D', minutes: 30, order: 2, due: '2026-11-02' }];
+  const r2 = plan({ events: [], todos: t2, habits: [], settings: s2 }, ON);
+  assert.deepEqual([slot(r2, 'a'), slot(r2, 'd').map((x) => x.slice(0, 5))], [['08:00-09:00'], ['09:00']]);
+});
+
+test('並び順どおり: 並び順の場所に入らなくても、空きがあれば入れる（取りこぼさない）', () => {
+  // 先のToDo(4時間)が日の終わりまで使うと、後ろのToDo(30分)は並び順の場所が無い → 翌日の頭 or 空きに
+  const s = { ...OS, dayStart: '08:00', dayEnd: '12:00', horizon: 1 };
+  const todos = [{ id: 'a', title: 'A', minutes: 240, order: 1 }, { id: 'b', title: 'B', minutes: 30, order: 2 }];
+  const r = plan({ events: [], todos, habits: [], settings: s }, ON);
+  assert.deepEqual(slot(r, 'a'), ['08:00-12:00']);
+  assert.deepEqual(r.unplaced.todos, [{ id: 'b', minutes: 30 }]); // 空き自体が無い
 });
