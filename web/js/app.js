@@ -127,6 +127,7 @@ function renderDay() {
   if (ch.children.length) sum.append(ch);
   if (isToday && ln.min >= de0(s)) sum.append(el('div', 'warn', `いまは活動時間（${s.dayStart}–${toM(s.dayEnd) <= toM(s.dayStart) ? '翌' : ''}${s.dayEnd}）の外です。今日の残りには配分されません（設定で変えられます）`));
   const uh = unplaced.habits.filter((x) => x.date === sel);
+  renderDayTodos(sel);
   if (uh.length) sum.append(el('div', 'warn', '⚠ 入りきらない習慣: ' + uh.map((x) => store.get('habit', x.id)?.title).filter(Boolean).join('、')));
 
   // タイムライン
@@ -447,7 +448,80 @@ function placementOf(id) {
     .sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start));
 }
 
+// ---- この日のToDo / 日ごと表示で使う、完了チェックつきの行 ----
+const tick = (t) => store.put('todo', { ...t, done: !t.done, doneAt: t.done ? null : new Date().toISOString() });
+/** 論理日（深夜まで続く活動時間を考慮）で数えた、自動配置された ToDo の枠 */
+function todoBlocks() {
+  return normalizeEvents(events(), S()).filter((e) => e.auto && e.kind === 'todo' && !e.virtual);
+}
+function blockRow(e, rawById) {
+  const t = store.get('todo', e.ref);
+  const r = rawById.get(e.id) || e;
+  const b = el('div', 'card item' + (t?.done ? ' done' : ''));
+  const chk = el('button', 'check' + (t?.done ? ' on' : ''), t?.done ? '✓' : '');
+  chk.setAttribute('aria-label', t?.done ? '未完了に戻す' : '完了にする');
+  if (t) chk.onclick = () => tick(t);
+  const main = el('button', 'main');
+  main.style.textAlign = 'left';
+  main.append(el('div', 't', e.title));
+  const m = el('div', 'm');
+  m.append(el('span', 0, `${clock(toM(e.start))}–${clock(toM(e.end))}`), el('span', 0, dur(toM(e.end) - toM(e.start))));
+  if (t?.due) m.append(el('span', t.due < logicalToday() ? 'ng' : '', `期限 ${label(t.due)}`));
+  if (+t?.priority === 3) m.append(el('span', 'ng', '優先度 高'));
+  main.append(m);
+  main.onclick = () => openEvent(e.id);
+  b.append(chk, main);
+  return b;
+}
+/** 1日の画面の「この日のToDo」 */
+function renderDayTodos(date) {
+  const box = $('#dtodo');
+  const raw = events();
+  const rawById = new Map(raw.map((e) => [e.id, e]));
+  const L = todoBlocks().filter((e) => e.date === date).sort((a, b) => toM(a.start) - toM(b.start));
+  box.innerHTML = '';
+  if (!L.length) { box.hidden = true; return; }
+  box.hidden = false;
+  const total = L.reduce((a, e) => a + toM(e.end) - toM(e.start), 0);
+  const doneN = L.filter((e) => store.get('todo', e.ref)?.done).length;
+  box.append(el('div', 'sect', `この日のToDo　${L.length}件・合計${dur(total)}${doneN ? `（うち${doneN}件完了）` : ''}`));
+  const l = el('div', 'list');
+  L.forEach((e) => l.append(blockRow(e, rawById)));
+  box.append(l);
+}
+
+let todoView = 'list';
+try { todoView = localStorage.getItem('sched-todoview') === 'day' ? 'day' : 'list'; } catch {}
+/** ToDo タブの「日ごと」：入っている日ごとにまとめる。どの日にも入っていないものは最後に */
+function renderTodosByDay(wrap, open, row) {
+  const today = logicalToday();
+  const raw = events();
+  const rawById = new Map(raw.map((e) => [e.id, e]));
+  const openIds = new Set(open.map((t) => t.id));
+  const blocks = todoBlocks().filter((e) => e.date >= today && openIds.has(e.ref)).sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start));
+  const byDate = new Map();
+  for (const e of blocks) byDate.set(e.date, [...(byDate.get(e.date) || []), e]);
+  const placedIds = new Set(blocks.map((e) => e.ref));
+  for (const [d, list] of byDate) {
+    const total = list.reduce((a, e) => a + toM(e.end) - toM(e.start), 0);
+    const diff = Math.round((pd(d) - pd(today)) / 864e5);
+    wrap.append(el('div', 'sect', `${diff === 0 ? '今日' : diff === 1 ? '明日' : ''} ${label(d)}　${list.length}件・${dur(total)}`.trim()));
+    const l = el('div', 'list');
+    list.forEach((e) => l.append(blockRow(e, rawById)));
+    wrap.append(l);
+  }
+  const rest = open.filter((t) => !placedIds.has(t.id));
+  if (rest.length) {
+    wrap.append(el('div', 'sect', 'まだどの日にも入っていない'));
+    const l = el('div', 'list');
+    rest.forEach((t, i) => l.append(row(t, i)));
+    wrap.append(l);
+  }
+  if (!byDate.size && !rest.length) wrap.append(el('div', 'empty', '未完了の ToDo はありません'));
+}
+
 function renderTodos() {
+  $('#todo-view').querySelectorAll('.tg').forEach((b) => b.classList.toggle('on', b.dataset.v === todoView));
   $('#todo-hint').textContent = ai.aiAvailable()
     ? '✨ 追加すると AI が所要時間を見積もり、今後1週間の空き時間に自動で割り振ります。'
     : '追加すると所要時間を見積もり（ログインすると AI 見積もり）、今後1週間の空き時間に自動で割り振ります。';
@@ -498,10 +572,13 @@ function renderTodos() {
     }
     return b;
   };
-  if (open.length) wrap.append(el('div', 'sect', manual ? '割り振りの順番（上から先に空きへ入れます）' : '割り振りの順番：期限が近い順（設定で手動に変更できます）'));
-  const l1 = el('div', 'list');
-  open.forEach((t, i) => l1.append(row(t, i)));
-  wrap.append(l1);
+  if (todoView === 'day') renderTodosByDay(wrap, open, row);
+  else {
+    if (open.length) wrap.append(el('div', 'sect', manual ? '割り振りの順番（上から先に空きへ入れます）' : '割り振りの順番：期限が近い順（設定で手動に変更できます）'));
+    const l1 = el('div', 'list');
+    open.forEach((t, i) => l1.append(row(t, i)));
+    wrap.append(l1);
+  }
   if (templates.length) {
     wrap.append(el('div', 'sect', 'くり返しの ToDo（設定した曜日に、自動で1件ずつ出ます）'));
     const lt = el('div', 'list');
@@ -589,6 +666,13 @@ $('#todo-add').onsubmit = (e) => {
   const t = store.put('todo', { id: uid(), title, minutes: 0, priority: 2, due: '', memo: '', done: false, createdAt: new Date().toISOString(), order: Date.now() });
   $('#todo-in').value = '';
   estimateTodos([t]);
+};
+$('#todo-view').onclick = (e) => {
+  const b = e.target.closest('[data-v]');
+  if (!b) return;
+  todoView = b.dataset.v;
+  try { localStorage.setItem('sched-todoview', todoView); } catch {}
+  render();
 };
 $('#replan').onclick = () => { replan(new Date(), true); render(); toast('並び順どおりに割り振り直しました'); };
 
