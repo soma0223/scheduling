@@ -23,6 +23,7 @@ export const DEFAULT_SETTINGS = {
   routes: [], // 移動ルート [{from, to, minutes, mode}]（行きも帰りも同じ）
   home: '家', // 予定のない時間にいる場所
   constrainedFirst: '1', // 場所などの条件があるものを先に配置する（'1'=する）
+  placeStyle: 'fit', // ToDo を入れる隙間の選び方: 'fit'=ちょうど収まる隙間 / 'early'=早い時間から詰める。優先度は「取り合い」にだけ使う
   doneKeepDays: '3', // 完了した ToDo を何日あとに自動で消すか（'never'=消さない）
   todoOrder: 'manual', // ToDo の割り振り順: 'manual'=手動の並び順 / 'due'=期限が近い順→優先度
   notify: [10], // 何分前に通知するか（複数可）
@@ -204,6 +205,20 @@ const weekStartOf = (date) => addDays(date, -((pd(date).getDay() + 6) % 7)); // 
 const daysBetween = (a, b) => Math.round((pd(b) - pd(a)) / 864e5);
 const weeklyN = (h) => Math.max(0, Math.min(7, Math.round(+h.perWeek || 0)));
 
+/** 「時間帯の好み」の範囲（分）。朝＝〜12:00、午後＝12:00〜18:00、夜＝18:00〜 */
+function preferWindow(pref, ds, de) {
+  if (pref === 'morning') return [ds, Math.min(de, 12 * 60)];
+  if (pref === 'afternoon') return [Math.max(ds, 12 * 60), Math.min(de, 18 * 60)];
+  if (pref === 'evening') return [Math.max(ds, 18 * 60), de];
+  return null;
+}
+/** need 分が入る隙間を選ぶ。fit＝いちばん小さく収まる隙間（同じなら早いほう）、early＝いちばん早い隙間 */
+function pickGap(cands, need, style) {
+  const fits = cands.filter(([a, b]) => b - a >= need);
+  if (!fits.length) return null;
+  return style === 'fit' ? fits.sort((x, y) => (x[1] - x[0]) - (y[1] - y[0]) || x[0] - y[0])[0] : fits[0];
+}
+
 const sameAuto = (a, b) =>
   a.title === b.title && a.date === b.date && a.start === b.start && a.end === b.end &&
   a.color === b.color && !!a.pinned === !!b.pinned && a.ref === b.ref && a.kind === b.kind;
@@ -334,9 +349,9 @@ export function plan({ events, todos, habits, settings }, now = new Date(), { fr
   const placeHabit = (h, d, warn = true) => {
     const m = +h.minutes || 30;
     const [lo, hi] = habitWindow(h, s);
-    const fits = cand(h, d, lo, hi).filter(([a, b]) => b - a >= m);
-    // 時間帯を決めていない習慣は、ちょうど収まる隙間に入れる（大きな空きはほかの ToDo のために残す）
-    const g = h.anytime ? fits.sort((x, y) => (x[1] - x[0]) - (y[1] - y[0]) || x[0] - y[0])[0] : fits[0];
+    // 時間帯を決めていない習慣は、好みの時間帯を先に探し、ちょうど収まる隙間に入れる（大きな空きはほかの ToDo のために残す）
+    const w = h.anytime ? preferWindow(h.prefer, ds, de) : null;
+    const g = (w && pickGap(cand(h, d, Math.max(lo, w[0]), Math.min(hi, w[1])), m, 'fit')) || pickGap(cand(h, d, lo, hi), m, h.anytime ? 'fit' : 'early');
     if (!g) {
       if (warn && !(d === today && lowerBound(d, s, now) + m > hi)) unplaced.habits.push({ id: h.id, date: d });
       return false;
@@ -396,22 +411,27 @@ export function plan({ events, todos, habits, settings }, now = new Date(), { fr
     const after = avail.filter((d) => t.due && d > t.due);
     const put = (d, a, b) => placed.push(autoEvent('todo', t, d, a, b, `auto-t-${t.id}-${d}-${fm(a).replace(':', '')}`));
 
+    const style = s.placeStyle === 'early' ? 'early' : 'fit';
+    const w = preferWindow(t.prefer, ds, de);
+    // その日の中で、好みの時間帯 → どこでも の順に探す
     const whole = (ds_) => {
       for (const d of ds_) {
-        const g = cand(t, d, ds, de).find(([a, b]) => b - a >= rest);
+        const g = (w && pickGap(cand(t, d, w[0], w[1]), rest, style)) || pickGap(cand(t, d, ds, de), rest, style);
         if (g) { put(d, g[0], g[0] + rest); rest = 0; return true; }
       }
       return false;
     };
     const split = (ds_) => {
       for (const d of ds_) {
-        for (const [a, b] of cand(t, d, ds, de)) {
-          if (rest <= 0) return;
-          let len = Math.min(b - a, rest);
-          if (len < rest && rest - len < minChunk) len = rest - minChunk; // 端数を残さない
-          if (len < Math.min(minChunk, rest)) continue;
-          put(d, a, a + len);
-          rest -= len;
+        for (const range of w ? [w, [ds, de]] : [[ds, de]]) {
+          for (const [a, b] of cand(t, d, range[0], range[1])) {
+            if (rest <= 0) return;
+            let len = Math.min(b - a, rest);
+            if (len < rest && rest - len < minChunk) len = rest - minChunk; // 端数を残さない
+            if (len < Math.min(minChunk, rest)) continue;
+            put(d, a, a + len);
+            rest -= len;
+          }
         }
       }
     };

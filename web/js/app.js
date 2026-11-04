@@ -238,12 +238,15 @@ function addPlace(raw) {
 // 入力欄で Enter を押したとき、フォーム全体が送信されないように「追加」を押す
 const enterToClick = (input, btn) => input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); btn.click(); } });
 
+const PREFER = [['', '指定なし'], ['morning', '朝（〜12時）'], ['afternoon', '午後（12〜18時）'], ['evening', '夜（18時〜）']];
 function constraintFields(cur) {
   const names = placeNames();
   const sel = new Set(cur.places || []);
   const titles = [...new Set(events().filter((e) => !e.auto && e.title).map((e) => e.title))].slice(0, 30);
   const hours = cur.after?.min ? +(cur.after.min / 60).toFixed(2) : '';
-  return `<label>できる場所（選ばなければ、どこでも）</label>
+  return `<label>時間帯の好み（その時間帯に空きがあれば優先。無ければほかの時間）</label>
+    <div class="toggles" id="c-prefer">${PREFER.map(([v, l]) => `<button type="button" class="tg ${(cur.prefer || '') === v ? 'on' : ''}" data-v="${v}">${l}</button>`).join('')}</div>
+    <label>できる場所（選ばなければ、どこでも）</label>
     <div class="toggles" id="c-places">${names.map((n) => `<button type="button" class="tg ${sel.has(n) ? 'on' : ''}" data-p="${esc(n)}">${esc(n)}</button>`).join('')}<button type="button" class="tg" id="c-addp">＋ 場所を追加</button></div>
     <div id="c-newplace" class="row" hidden style="margin-top:8px"><div><input type="text" id="c-np" maxlength="12" placeholder="場所の名前（例：ジム）"></div><div style="flex:none"><button type="button" class="pri" id="c-npadd">追加</button></div></div>
     <label>この予定のあとから（例：「学校」の 2 時間後から）</label>
@@ -257,6 +260,11 @@ function constraintFields(cur) {
 }
 
 function bindConstraints(p, cur) {
+  let prefer = cur.prefer || '';
+  p.querySelectorAll('#c-prefer .tg').forEach((b) => (b.onclick = () => {
+    prefer = b.dataset.v;
+    p.querySelectorAll('#c-prefer .tg').forEach((x) => x.classList.toggle('on', x === b));
+  }));
   const set = new Set(cur.places || []);
   const wire = (b) => (b.onclick = () => {
     const n = b.dataset.p;
@@ -278,7 +286,7 @@ function bindConstraints(p, cur) {
   return () => {
     const key = $('#c-key', p).value.trim();
     const h = parseFloat($('#c-hours', p).value);
-    return { places: [...set], after: key ? { key, min: Math.max(0, Math.round((Number.isFinite(h) ? h : 0) * 60)) } : null, notBefore: $('#c-nb', p).value || '', notAfter: $('#c-na', p).value || '' };
+    return { places: [...set], after: key ? { key, min: Math.max(0, Math.round((Number.isFinite(h) ? h : 0) * 60)) } : null, notBefore: $('#c-nb', p).value || '', notAfter: $('#c-na', p).value || '', prefer };
   };
 }
 
@@ -468,7 +476,7 @@ function renderTodos() {
     if (t.series) m.append(el('span', 'pill', '🔁 くり返し'));
     if (t.start && t.start > ymd(new Date())) m.append(el('span', 0, `${label(t.start)}に出ます`));
     if (+t.priority === 3) m.append(el('span', 'ng', '優先度 高'));
-    if (hasConstraint(t)) m.append(el('span', 'pill', describe(t)));
+    if (hasConstraint(t) || t.prefer) m.append(el('span', 'pill', describe(t)));
     if (!t.done && t.minutes) {
       const pl = placementOf(t.id);
       const un = unplaced.todos.find((u) => u.id === t.id);
@@ -629,7 +637,7 @@ function openTodo(id) {
     $('#t-habit', p).onclick = () => {
       const c = getC(), minutes = Math.max(5, Math.round((+$('#t-min', p).value || +t.minutes || 30) / 5) * 5);
       closeSheet();
-      openHabit(null, { title: $('#t-title', p).value.trim() || t.title, minutes, places: c.places, after: c.after, notBefore: c.notBefore, notAfter: c.notAfter, color: HABIT_COLOR }, t.id);
+      openHabit(null, { title: $('#t-title', p).value.trim() || t.title, minutes, places: c.places, after: c.after, notBefore: c.notBefore, notAfter: c.notAfter, prefer: c.prefer, color: HABIT_COLOR }, t.id);
     };
     $('#t-del', p).onclick = () => { if (confirm(t.template ? 'くり返しの設定を削除しますか？（これから出る分は無くなります。すでに出た ToDo はそのまま残ります）' : 'この ToDo を削除しますか？')) { store.remove('todo', id); closeSheet(); } };
     $('#t-ai', p).onclick = () => { closeSheet(); estimateTodos([{ ...t, title: $('#t-title', p).value.trim() || t.title }]); };
@@ -763,6 +771,7 @@ async function renderSettings() {
     <h2>自動配置</h2>
     <div class="srow"><span>ToDo を分割する最小単位</span><input type="number" min="5" max="240" step="5" data-k="minChunk" value="${s.minChunk}">分</div>
     <div class="srow"><span>条件つきを先に入れる<small>場所などの条件があるものは入れる枠が限られるので、先に配置します</small></span><select data-k="constrainedFirst"><option value="1">先に入れる</option><option value="0">並び順どおり</option></select></div>
+    <div class="srow"><span>ToDo を入れる隙間<small>優先度は「空きが足りないとき、誰が先に枠を取るか」にだけ使います。時間の早い遅いは決めません</small></span><select data-k="placeStyle"><option value="fit">ちょうど収まる隙間</option><option value="early">早い時間から詰める</option></select></div>
     <div class="srow"><span>ToDo を入れる順番<small>手動：ToDo 画面の ▲▼ で並べた順</small></span><select data-k="todoOrder"><option value="manual">手動の順番</option><option value="due">期限が近い順</option></select></div>
     <div class="srow"><span>完了した ToDo を自動で消す<small>完了してから、この日数がたったら削除します</small></span><select data-k="doneKeepDays"><option value="1">1日後</option><option value="3">3日後</option><option value="7">7日後</option><option value="30">30日後</option><option value="never">消さない</option></select></div>
     <div class="srow"><span>配置する期間</span><input type="number" min="1" max="28" step="1" data-k="horizon" value="${s.horizon}">日</div>
@@ -815,6 +824,7 @@ async function renderSettings() {
   box.querySelector('select[data-k=todoOrder]').value = s.todoOrder || 'manual';
   box.querySelector('select[data-k=constrainedFirst]').value = String(s.constrainedFirst) === '0' ? '0' : '1';
   box.querySelector('select[data-k=home]').value = s.home || '家';
+  box.querySelector('select[data-k=placeStyle]').value = s.placeStyle === 'early' ? 'early' : 'fit';
   box.querySelector('select[data-k=doneKeepDays]').value = String(s.doneKeepDays ?? '3');
   box.querySelectorAll('[data-pt]').forEach((c) => (c.onchange = () => store.setSettings({ places: S().places.map((p, i) => (i === +c.dataset.pt ? { ...p, transit: c.checked } : p)) })));
   box.querySelectorAll('[data-pd]').forEach((b) => (b.onclick = () => {
@@ -866,7 +876,7 @@ async function renderSettings() {
       extra = { dayEndNext: toM(b) <= toM(a) }; // 終了が開始以前なら翌日まで
       freshNext = true;
     }
-    if (k === 'todoOrder' || k === 'constrainedFirst') freshNext = true;
+    if (k === 'todoOrder' || k === 'constrainedFirst' || k === 'placeStyle') freshNext = true;
     store.setSettings({ [k]: v, ...extra });
     if (k === 'theme') applyTheme();
     };

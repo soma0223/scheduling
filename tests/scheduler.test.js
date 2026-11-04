@@ -275,7 +275,7 @@ test('深夜: 習慣を 0:00〜2:00 の時間帯に置ける（前日の夜扱�
 test('活動時間: 保存されたフラグと食い違っても、終了が開始以前なら翌日として扱う', () => {
   const now = new Date(2026, 10, 2, 20, 53);
   const todos = [{ id: 'a', title: 'A', minutes: 60 }];
-  const r = plan({ events: [], todos, habits: [], settings: { ...S, dayEnd: '02:59', dayEndNext: false, horizon: 1 } }, now);
+  const r = plan({ events: [], todos, habits: [], settings: { ...S, dayEnd: '02:59', dayEndNext: false, horizon: 1, placeStyle: 'early' } }, now);
   assert.deepEqual(r.upserts.map((e) => `${e.date} ${e.start}`), ['2026-11-02 20:55']);
 });
 
@@ -546,4 +546,51 @@ test('くり返しToDo: 出た日〜期限のあいだの空きにだけ入る�
   const future = { ...inst, id: 'kd@2026-12-02', start: '2026-12-02', due: '2026-12-03' };
   const r3 = plan({ events: [], todos: [future], habits: [], settings: s }, now);
   assert.deepEqual([r3.upserts, r3.unplaced.todos], [[], []]);
+});
+
+// ---- 時間帯の好み・入れ方（優先度は取り合いにだけ使う）----
+const PS = { ...S, dayStart: '08:00', dayEnd: '22:00', horizon: 1 };
+const PN = new Date(2026, 10, 2, 6, 0);
+// 空き: 08:00-09:00(1h) / 10:00-13:00(3h) / 14:00-22:00(8h)
+const PE = [ev('a', '2026-11-02', '09:00', '10:00'), ev('b', '2026-11-02', '13:00', '14:00')];
+
+test('入れ方: 既定は「ちょうど収まる隙間」。高優先度でも早い時間に集まらない／「早い順」にもできる', () => {
+  const todos = [{ id: 'hi', title: '重要', minutes: 60, priority: 3, order: 1 }];
+  const fit = plan({ events: PE, todos, habits: [], settings: PS }, PN);
+  assert.deepEqual(slot(fit, 'hi'), ['08:00-09:00']); // 1時間の隙間にぴったり（3h・8h の大きな空きは残す）
+  const early = plan({ events: PE, todos: [{ id: 'hi', title: '重要', minutes: 30, priority: 3 }], habits: [], settings: { ...PS, placeStyle: 'early' } }, PN);
+  assert.deepEqual(slot(early, 'hi'), ['08:00-08:30']);
+  const fit30 = plan({ events: PE, todos: [{ id: 'x', title: 'x', minutes: 30, priority: 3 }], habits: [], settings: PS }, PN);
+  assert.deepEqual(slot(fit30, 'x'), ['08:00-08:30']); // いちばん小さく収まる隙間(1h)
+  // 150分は 3h の隙間にぴったり（8h の空きではなく）
+  assert.deepEqual(slot(plan({ events: PE, todos: [{ id: 'y', title: 'y', minutes: 150 }], habits: [], settings: PS }, PN), 'y'), ['10:00-12:30']);
+});
+
+test('入れ方: 優先度が高い順に枠を取る（空きが足りないとき）', () => {
+  const s = { ...PS, dayStart: '08:00', dayEnd: '09:00' };
+  const todos = [{ id: 'lo', title: 'lo', minutes: 60, priority: 1, order: 1 }, { id: 'hi', title: 'hi', minutes: 60, priority: 3, order: 2 }];
+  const r = plan({ events: [], todos, habits: [], settings: { ...s, todoOrder: 'due', horizon: 1 } }, PN);
+  assert.deepEqual([slot(r, 'hi'), slot(r, 'lo')], [['08:00-09:00'], []]);
+});
+
+test('時間帯の好み: 朝・午後・夜。無ければ別の時間に入れる', () => {
+  const t = (prefer) => [{ id: 't', title: 'T', minutes: 60, prefer }];
+  const at = (prefer, ev_ = []) => slot(plan({ events: ev_, todos: t(prefer), habits: [], settings: { ...PS, placeStyle: 'early' } }, PN), 't')[0];
+  assert.equal(at('morning'), '08:00-09:00');
+  assert.equal(at('afternoon'), '12:00-13:00'); // 12:00 以降
+  assert.equal(at('evening'), '18:00-19:00');
+  // 夜に空きが無ければ、ほかの時間
+  assert.equal(at('evening', [ev('n', '2026-11-02', '18:00', '22:00')]), '08:00-09:00');
+  // ちょうど収まる隙間 × 好み: 午後(12-18)の中で、いちばん小さく収まる隙間（10:00-13:00 の空きの午後ぶん 12:00-13:00）
+  const fit = plan({ events: PE, todos: t('afternoon'), habits: [], settings: PS }, PN);
+  assert.deepEqual(slot(fit, 't'), ['12:00-13:00']);
+  // 冪等
+  const r = plan({ events: PE, todos: t('evening'), habits: [], settings: PS }, PN);
+  assert.deepEqual(plan({ events: [...PE, ...r.upserts], todos: t('evening'), habits: [], settings: PS }, PN).upserts, []);
+});
+
+test('時間帯の好み: 時間帯を決めない習慣にも効く', () => {
+  const h = [{ id: 'h', title: 'H', days: [1], minutes: 30, anytime: true, prefer: 'evening' }];
+  const r = plan({ events: PE, todos: [], habits: h, settings: PS }, PN);
+  assert.deepEqual(r.upserts.map((e) => e.start), ['18:00']);
 });

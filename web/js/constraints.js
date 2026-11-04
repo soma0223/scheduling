@@ -27,7 +27,7 @@ export const DEFAULT_MODES = [
 ];
 
 /** 場所または「あとから」の条件を持つか */
-export const hasConstraint = (x) => !!(x && ((x.places || []).length || (x.after && x.after.key) || x.notBefore || x.notAfter));
+export const hasConstraint = (x) => !!(x && ((x.places || []).length || (x.after && x.after.key) || x.notBefore || x.notAfter)); // 好み(prefer)は「入れる枠が限られる」条件ではないので含めない
 
 /** 移動中の場所か（移動手段、または「移動中」にした場所） */
 export const isTransit = (name, s) =>
@@ -135,6 +135,7 @@ export function placeOfGap(placed, a, b, s) {
 /** 条件の説明（画面表示用） */
 export function describe(x) {
   const out = [];
+  if (x.prefer) out.push({ morning: '朝', afternoon: '午後', evening: '夜' }[x.prefer] + 'が好み');
   if ((x.places || []).length) out.push(x.places.join('・') + 'で');
   if (x.notBefore) out.push(`${x.notBefore.replace(/^0/, '')}以降`);
   if (x.notAfter) out.push(`${x.notAfter.replace(/^0/, '')}まで`);

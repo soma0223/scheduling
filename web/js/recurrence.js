@@ -85,7 +85,7 @@ export function repeatTodoInstances(tpl, today, last) {
     if (due < today) continue;
     out.push({
       id: `${tpl.id}@${d}`, series: tpl.id, title: tpl.title, minutes: tpl.minutes, priority: tpl.priority || 2,
-      memo: tpl.memo || '', places: tpl.places || [], after: tpl.after || null, notBefore: tpl.notBefore || '', notAfter: tpl.notAfter || '',
+      memo: tpl.memo || '', places: tpl.places || [], after: tpl.after || null, notBefore: tpl.notBefore || '', notAfter: tpl.notAfter || '', prefer: tpl.prefer || '',
       estSource: tpl.estSource, estReason: tpl.estReason, start: d, due, done: false, createdAt: d,
       order: Date.parse(d + 'T12:00:00Z'), // 出た順（先に出たものが上）
     });
