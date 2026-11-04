@@ -23,6 +23,7 @@ export const DEFAULT_SETTINGS = {
   routes: [], // 移動ルート [{from, to, minutes, mode}]（行きも帰りも同じ）
   home: '家', // 予定のない時間にいる場所
   constrainedFirst: '1', // 場所などの条件があるものを先に配置する（'1'=する）
+  doneKeepDays: '3', // 完了した ToDo を何日あとに自動で消すか（'never'=消さない）
   todoOrder: 'manual', // ToDo の割り振り順: 'manual'=手動の並び順 / 'due'=期限が近い順→優先度
   notify: [10], // 何分前に通知するか（複数可）
   theme: 'auto',

@@ -429,7 +429,8 @@ function renderTodos() {
   const list = store.all('todo');
   const manual = S().todoOrder !== 'due';
   const open = list.filter((t) => !t.done).sort(todoCompare(S()));
-  const done = list.filter((t) => t.done).sort((a, b) => String(b.doneAt).localeCompare(String(a.doneAt))).slice(0, 20);
+  const doneAll = list.filter((t) => t.done).sort((a, b) => String(b.doneAt).localeCompare(String(a.doneAt)));
+  const done = doneAll.slice(0, 30);
   const wrap = $('#todo-list');
   wrap.innerHTML = '';
   if (!list.length) { wrap.append(el('div', 'empty', 'ToDo はまだありません')); return; }
@@ -472,12 +473,30 @@ function renderTodos() {
   const l1 = el('div', 'list');
   open.forEach((t, i) => l1.append(row(t, i)));
   wrap.append(l1);
-  if (done.length) {
-    wrap.append(el('div', 'sect', '完了'));
-    const l2 = el('div', 'list');
-    done.forEach((t) => l2.append(row(t)));
-    wrap.append(l2);
+  if (doneAll.length) {
+    // 完了済みは普段は隠す。開いたときだけ一覧とまとめて削除を出す
+    const tg = el('button', 'ghost donetg', `完了済み ${doneAll.length}件 ${showDone ? '▲' : '▼'}`);
+    tg.onclick = () => { showDone = !showDone; render(); };
+    wrap.append(tg);
+    if (showDone) {
+      const l2 = el('div', 'list');
+      done.forEach((t) => l2.append(row(t)));
+      wrap.append(l2);
+      const clr = el('button', 'ghost donetg', '完了済みをすべて削除');
+      clr.onclick = () => { if (confirm(`完了済みの ${doneAll.length} 件を削除しますか？`)) { store.batch(({ remove }) => doneAll.forEach((t) => remove('todo', t.id))); showDone = false; toast('削除しました'); } };
+      wrap.append(clr);
+    }
   }
+}
+
+let showDone = false;
+/** 完了してから設定の日数がたった ToDo を削除する（元の ToDo が消えると、その作業枠も自動で消える） */
+function purgeDoneTodos() {
+  const keep = S().doneKeepDays;
+  if (String(keep) === 'never') return;
+  const cutoff = Date.now() - Math.max(0, Number(keep ?? 3)) * 864e5;
+  const old = store.all('todo').filter((t) => t.done && (!t.doneAt || new Date(t.doneAt).getTime() < cutoff));
+  if (old.length) store.batch(({ remove }) => old.forEach((t) => remove('todo', t.id)));
 }
 
 /** open（表示順）の idx 番目を dir(-1/+1) だけ動かす。全件に連番を振り直してから入れ替える */
@@ -663,6 +682,7 @@ async function renderSettings() {
     <div class="srow"><span>ToDo を分割する最小単位</span><input type="number" min="5" max="240" step="5" data-k="minChunk" value="${s.minChunk}">分</div>
     <div class="srow"><span>条件つきを先に入れる<small>場所などの条件があるものは入れる枠が限られるので、先に配置します</small></span><select data-k="constrainedFirst"><option value="1">先に入れる</option><option value="0">並び順どおり</option></select></div>
     <div class="srow"><span>ToDo を入れる順番<small>手動：ToDo 画面の ▲▼ で並べた順</small></span><select data-k="todoOrder"><option value="manual">手動の順番</option><option value="due">期限が近い順</option></select></div>
+    <div class="srow"><span>完了した ToDo を自動で消す<small>完了してから、この日数がたったら削除します</small></span><select data-k="doneKeepDays"><option value="1">1日後</option><option value="3">3日後</option><option value="7">7日後</option><option value="30">30日後</option><option value="never">消さない</option></select></div>
     <div class="srow"><span>配置する期間</span><input type="number" min="1" max="28" step="1" data-k="horizon" value="${s.horizon}">日</div>
   </div>
   <div class="card group">
@@ -713,6 +733,7 @@ async function renderSettings() {
   box.querySelector('select[data-k=todoOrder]').value = s.todoOrder || 'manual';
   box.querySelector('select[data-k=constrainedFirst]').value = String(s.constrainedFirst) === '0' ? '0' : '1';
   box.querySelector('select[data-k=home]').value = s.home || '家';
+  box.querySelector('select[data-k=doneKeepDays]').value = String(s.doneKeepDays ?? '3');
   box.querySelectorAll('[data-pt]').forEach((c) => (c.onchange = () => store.setSettings({ places: S().places.map((p, i) => (i === +c.dataset.pt ? { ...p, transit: c.checked } : p)) })));
   box.querySelectorAll('[data-pd]').forEach((b) => (b.onclick = () => {
     const p = S().places[+b.dataset.pd];
@@ -868,10 +889,10 @@ sync.onStatus(() => { if (tab === 'settings' && !sheetOpen) render(); });
 let lastDay = logicalToday();
 setInterval(() => {
   const d = logicalToday();
-  if (d !== lastDay) { if (sel === lastDay) sel = d; lastDay = d; replan(); }
+  if (d !== lastDay) { if (sel === lastDay) sel = d; lastDay = d; purgeDoneTodos(); replan(); }
   if (!sheetOpen && tab === 'day') render();
 }, 60000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { replan(); if (!sheetOpen) render(); } });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { purgeDoneTodos(); replan(); if (!sheetOpen) render(); } });
 
 // ---------------------------------------------------------------- 起動
 if ('serviceWorker' in navigator) {
@@ -887,6 +908,7 @@ if ('serviceWorker' in navigator) {
   });
 }
 applyTheme();
+purgeDoneTodos();
 replan();
 setTab(tab);
 push.scheduleLocal(events(), S());
